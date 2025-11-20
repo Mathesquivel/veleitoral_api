@@ -166,17 +166,20 @@ def clear_volume():
     Remove TODOS os arquivos do volume /app/dados_tse_volume.
     Libera espaço quando o volume fica cheio.
     """
-    arquivos = list(Path(UPLOAD_DIR).glob("*"))
+    dir_path = Path(UPLOAD_DIR)
+    arquivos = list(dir_path.glob("*"))
+    removidos = 0
 
     for arq in arquivos:
         try:
             arq.unlink()
-        except:
-            pass
+            removidos += 1
+        except Exception as e:
+            print(f"⚠ Erro ao remover {arq}: {e}")
 
     return {
         "status": "ok",
-        "mensagem": f"{len(arquivos)} arquivo(s) removido(s) do volume.",
+        "mensagem": f"{removidos} arquivo(s) removido(s) do volume.",
     }
 
 
@@ -190,8 +193,11 @@ CHUNK_SIZE = 1024 * 1024  # 1MB por chunk
 @app.post("/upload")
 async def upload_csv(file: UploadFile = File(...)):
     """
-    Recebe um arquivo CSV de qualquer tamanho e salva no volume.
-    Implementação em streaming.
+    Recebe um arquivo CSV de qualquer tamanho e salva no volume (/app/dados_tse_volume).
+
+    Implementação em streaming:
+    - Lê o arquivo em blocos (chunks) de 1MB
+    - Vai gravando direto no disco
     """
 
     if not file.filename.lower().endswith(".csv"):
@@ -223,7 +229,7 @@ async def upload_csv(file: UploadFile = File(...)):
         "status": "ok",
         "mensagem": (
             f"Arquivo {file.filename} (≈ {tamanho_mb:.2f} MB) salvo em {destino}. "
-            "Agora você pode chamar /reload."
+            "Agora você pode chamar /reload para processar junto com os demais CSV."
         ),
         "arquivo": file.filename,
         "caminho": str(destino),
@@ -234,7 +240,8 @@ async def upload_csv(file: UploadFile = File(...)):
 @app.post("/upload-zip")
 async def upload_zip(file: UploadFile = File(...)):
     """
-    Recebe um ZIP grande contendo vários CSVs e extrai todos no volume.
+    Recebe um .zip contendo vários arquivos .csv e extrai todos
+    para o volume (/app/dados_tse_volume).
     """
 
     if not file.filename.lower().endswith(".zip"):
@@ -246,6 +253,7 @@ async def upload_zip(file: UploadFile = File(...)):
     zip_path = Path(UPLOAD_DIR) / file.filename
     tamanho_bytes = 0
 
+    # Salva o zip em disco em streaming
     try:
         with open(zip_path, "wb") as f:
             while True:
@@ -254,7 +262,6 @@ async def upload_zip(file: UploadFile = File(...)):
                     break
                 tamanho_bytes += len(chunk)
                 f.write(chunk)
-
     except Exception as e:
         if zip_path.exists():
             zip_path.unlink()
@@ -265,16 +272,20 @@ async def upload_zip(file: UploadFile = File(...)):
 
     tamanho_mb = tamanho_bytes / (1024 * 1024)
 
+    # Extrai os CSV de dentro do zip
     extraidos: List[str] = []
     try:
         with zipfile.ZipFile(zip_path, "r") as z:
             for member in z.namelist():
+                # só queremos arquivos .csv
                 if not member.lower().endswith(".csv"):
                     continue
 
+                # evita path traversal: usa só o nome do arquivo
                 nome_arquivo = Path(member).name
                 destino_csv = Path(UPLOAD_DIR) / nome_arquivo
 
+                # extrai "na mão" para permitir overwrite e evitar paths estranhos
                 with z.open(member) as src, open(destino_csv, "wb") as dst:
                     shutil.copyfileobj(src, dst)
 
@@ -282,19 +293,29 @@ async def upload_zip(file: UploadFile = File(...)):
 
     except zipfile.BadZipFile:
         zip_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Arquivo ZIP inválido.")
+        raise HTTPException(
+            status_code=400,
+            detail="Arquivo .zip inválido ou corrompido.",
+        )
     except Exception as e:
         zip_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Erro ao extrair ZIP: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao extrair arquivos do .zip: {e}",
+        )
     finally:
+        # remove o zip após extrair, para economizar espaço no volume
         zip_path.unlink(missing_ok=True)
 
     return {
         "status": "ok",
         "mensagem": (
             f"Arquivo {file.filename} (≈ {tamanho_mb:.2f} MB) enviado e "
-            f"{len(extraidos)} CSV extraído(s)."
+            f"{len(extraidos)} arquivo(s) .csv extraído(s) para {UPLOAD_DIR}. "
+            "Agora você pode chamar /reload para processar todos os CSV."
         ),
+        "arquivo_zip": file.filename,
+        "tamanho_zip_mb": round(tamanho_mb, 2),
         "total_csv_extraidos": len(extraidos),
         "arquivos_csv": extraidos,
     }
