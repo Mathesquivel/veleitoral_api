@@ -13,7 +13,6 @@ from ingestor import ingest_all, DB_PATH
 app = FastAPI(title="API TSE - VELEITORAL")
 
 # pasta do volume do Railway para CSVs grandes (>= 100MB)
-# ATENÇÃO: este caminho deve ser igual ao "Mount Path" configurado no volume do Railway
 UPLOAD_DIR = "/app/dados_tse_volume"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -112,9 +111,6 @@ def contar_registros() -> int:
 
 @app.on_event("startup")
 def startup_event():
-    # Ao subir a API, faz ingestão automática dos CSV:
-    # - dados_tse/ (no git, arquivos menores)
-    # - /app/dados_tse_volume (volume, arquivos grandes)
     print("\n🚀 Iniciando API e carregando dados do TSE...")
     total = ingest_all(clear_table=True)
     print(f"🚀 API pronta. Registros carregados: {total}")
@@ -137,12 +133,6 @@ def root():
 
 @app.post("/reload")
 def reload_dados():
-    """
-    Reprocessa todos os CSV das pastas:
-    - ./dados_tse            (arquivos menores, no git)
-    - /app/dados_tse_volume  (arquivos grandes, no volume)
-    e recria a tabela votos.
-    """
     total = ingest_all(clear_table=True)
     return {
         "status": "ok",
@@ -152,10 +142,11 @@ def reload_dados():
 
 
 # =============================
-# ENDPOINT DE UPLOAD
+# ENDPOINT DE UPLOAD (VERSÃO OTIMIZADA)
 # =============================
 
 TAMANHO_MIN_VOLUME_MB = 100  # apenas arquivos >= 100 MB vão para o volume
+CHUNK_SIZE = 1024 * 1024  # 1MB por chunk
 
 
 @app.post("/upload")
@@ -164,21 +155,41 @@ async def upload_csv(file: UploadFile = File(...)):
     Recebe um arquivo CSV e, SE TIVER PELO MENOS 100 MB,
     salva no volume (/app/dados_tse_volume).
 
-    Regras:
-    - Arquivos < 100 MB NÃO são armazenados no volume.
-      A ideia é mantê-los no repositório git em ./dados_tse/.
-    - Após enviar um arquivo grande e ser salvo no volume,
-      você pode chamar /reload para reprocessar tudo.
+    Implementação em streaming:
+    - Lê o arquivo em blocos (chunks) de 1MB
+    - Vai gravando direto no disco
+    - Soma o tamanho total à medida que grava
+    - Se no final tiver < 100MB, apaga o arquivo e retorna erro 400
     """
+
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Envie apenas arquivos .csv")
 
-    # Lê o conteúdo para medir o tamanho
-    conteudo = await file.read()
-    tamanho_bytes = len(conteudo)
+    destino = Path(UPLOAD_DIR) / file.filename
+    tamanho_bytes = 0
+
+    try:
+        with open(destino, "wb") as f:
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                tamanho_bytes += len(chunk)
+                f.write(chunk)
+
+    except Exception as e:
+        if destino.exists():
+            destino.unlink()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao salvar arquivo no volume: {e}",
+        )
+
     tamanho_mb = tamanho_bytes / (1024 * 1024)
 
     if tamanho_mb < TAMANHO_MIN_VOLUME_MB:
+        if destino.exists():
+            destino.unlink()
         raise HTTPException(
             status_code=400,
             detail=(
@@ -187,10 +198,6 @@ async def upload_csv(file: UploadFile = File(...)):
                 "Para arquivos menores, mantenha-os no repositório Git em 'dados_tse/'."
             ),
         )
-
-    destino = Path(UPLOAD_DIR) / file.filename
-    with open(destino, "wb") as f:
-        f.write(conteudo)
 
     return {
         "status": "ok",
@@ -209,15 +216,8 @@ async def upload_csv(file: UploadFile = File(...)):
 # =============================
 
 @app.get("/votos/totais", response_model=List[VotoTotal])
-def votos_totais(
-    ano: Optional[str] = Query(default=None),
-    uf: Optional[str] = Query(default=None),
-    limite: int = Query(default=50, ge=1, le=1000),
-):
-    """
-    Ranking de votos totais por candidato.
-    Filtros opcionais: ano, uf.
-    """
+def votos_totais(ano: Optional[str] = None, uf: Optional[str] = None,
+                 limite: int = Query(default=50, ge=1, le=1000)):
     conn = get_conn()
     cur = conn.cursor()
 
@@ -232,7 +232,6 @@ def votos_totais(
     if ano:
         sql += " AND ano = ?"
         params.append(ano)
-
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -247,20 +246,16 @@ def votos_totais(
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
-
     return [VotoTotal(**dict(r)) for r in rows]
 
 
 @app.get("/votos/zona", response_model=List[VotoZona])
 def votos_por_zona(
-    ano: Optional[str] = Query(default=None),
-    uf: Optional[str] = Query(default=None),
-    zona: Optional[str] = Query(default=None),
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    zona: Optional[str] = None,
     limite: int = Query(default=100, ge=1, le=5000),
 ):
-    """
-    Votos por candidato / zona (/ seção se existir).
-    """
     conn = get_conn()
     cur = conn.cursor()
 
@@ -275,11 +270,9 @@ def votos_por_zona(
     if ano:
         sql += " AND ano = ?"
         params.append(ano)
-
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
-
     if zona:
         sql += " AND nr_zona = ?"
         params.append(zona)
@@ -294,19 +287,15 @@ def votos_por_zona(
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
-
     return [VotoZona(**dict(r)) for r in rows]
 
 
 @app.get("/votos/municipio", response_model=List[VotoMunicipio])
 def votos_por_municipio(
-    ano: Optional[str] = Query(default=None),
-    uf: Optional[str] = Query(default=None),
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
     limite: int = Query(default=100, ge=1, le=5000),
 ):
-    """
-    Votos por candidato agregados por município.
-    """
     conn = get_conn()
     cur = conn.cursor()
 
@@ -321,7 +310,6 @@ def votos_por_municipio(
     if ano:
         sql += " AND ano = ?"
         params.append(ano)
-
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -336,20 +324,16 @@ def votos_por_municipio(
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
-
     return [VotoMunicipio(**dict(r)) for r in rows]
 
 
 @app.get("/votos/cargo", response_model=List[VotoCargo])
 def votos_por_cargo(
-    ano: Optional[str] = Query(default=None),
-    uf: Optional[str] = Query(default=None),
-    cd_cargo: Optional[str] = Query(default=None),
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    cd_cargo: Optional[str] = None,
     limite: int = Query(default=100, ge=1, le=5000),
 ):
-    """
-    Votos por candidato agregados por cargo.
-    """
     conn = get_conn()
     cur = conn.cursor()
 
@@ -364,11 +348,9 @@ def votos_por_cargo(
     if ano:
         sql += " AND ano = ?"
         params.append(ano)
-
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
-
     if cd_cargo:
         sql += " AND cd_cargo = ?"
         params.append(cd_cargo)
@@ -383,19 +365,15 @@ def votos_por_cargo(
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
-
     return [VotoCargo(**dict(r)) for r in rows]
 
 
 @app.get("/candidatos", response_model=List[CandidatoInfo])
 def listar_candidatos(
-    ano: Optional[str] = Query(default=None),
-    uf: Optional[str] = Query(default=None),
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
     limite: int = Query(default=100, ge=1, le=5000),
 ):
-    """
-    Lista candidatos com seus votos totais.
-    """
     conn = get_conn()
     cur = conn.cursor()
 
@@ -410,7 +388,6 @@ def listar_candidatos(
     if ano:
         sql += " AND ano = ?"
         params.append(ano)
-
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -425,18 +402,14 @@ def listar_candidatos(
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
-
     return [CandidatoInfo(**dict(r)) for r in rows]
 
 
 @app.get("/partidos", response_model=List[PartidoInfo])
 def listar_partidos(
-    ano: Optional[str] = Query(default=None),
-    uf: Optional[str] = Query(default=None),
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
 ):
-    """
-    Lista partidos com seus votos totais.
-    """
     conn = get_conn()
     cur = conn.cursor()
 
@@ -453,7 +426,6 @@ def listar_partidos(
     if ano:
         sql += " AND ano = ?"
         params.append(ano)
-
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -466,19 +438,15 @@ def listar_partidos(
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
-
     return [PartidoInfo(**dict(r)) for r in rows]
 
 
 @app.get("/ranking/partido", response_model=List[RankingPartido])
 def ranking_partidos(
-    ano: Optional[str] = Query(default=None),
-    uf: Optional[str] = Query(default=None),
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
     limite: int = Query(default=50, ge=1, le=1000),
 ):
-    """
-    Ranking de partidos por votos totais.
-    """
     conn = get_conn()
     cur = conn.cursor()
 
@@ -493,7 +461,6 @@ def ranking_partidos(
     if ano:
         sql += " AND ano = ?"
         params.append(ano)
-
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -508,15 +475,11 @@ def ranking_partidos(
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
-
     return [RankingPartido(**dict(r)) for r in rows]
 
 
 @app.get("/estatisticas", response_model=Estatisticas)
 def estatisticas():
-    """
-    Retorna estatísticas gerais da base.
-    """
     conn = get_conn()
     cur = conn.cursor()
 
