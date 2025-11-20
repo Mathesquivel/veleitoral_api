@@ -9,7 +9,7 @@ import re
 
 BASE_DIR = Path(__file__).parent
 
-# AGORA A INGESTÃO SEMPRE LÊ APENAS DO VOLUME:
+# Agora a ingestão lê APENAS do volume do Railway
 DATA_DIR = Path("/app/dados_tse_volume")
 
 DB_PATH = BASE_DIR / "tse_eleicoes.db"
@@ -20,28 +20,27 @@ ENCODING = "latin1"
 
 def detectar_colunas(df: pd.DataFrame):
     """
-    Detecta colunas mínimas pra considerar que é um arquivo de votação de candidato ou partido.
+    Detecta colunas mínimas pra considerar que é um arquivo de votação de candidato/partido.
     """
 
-    # Coluna de votos — várias versões dos CSV usam nomes diferentes
+    # Coluna de votos
     vote_col = None
     for c in ["QT_VOTOS_NOMINAIS", "QT_VOTOS_NOMINAIS_VALIDOS", "QT_VOTOS", "QT_VOTOS_VALIDOS"]:
         if c in df.columns:
             vote_col = c
             break
-
     if vote_col is None:
         return None
 
-    # Nome do candidato/urna (depende do layout)
+    # Coluna de candidato (pode não existir em arquivo de partido)
     if "NM_CANDIDATO" in df.columns:
         cand_col = "NM_CANDIDATO"
     elif "NM_URNA_CANDIDATO" in df.columns:
         cand_col = "NM_URNA_CANDIDATO"
     else:
-        cand_col = None  # pode ser arquivo de PARTIDO
+        cand_col = None
 
-    # Partido
+    # Coluna de partido
     if "SG_PARTIDO" in df.columns:
         party_col = "SG_PARTIDO"
     elif "NM_PARTIDO" in df.columns:
@@ -64,33 +63,27 @@ def detectar_colunas(df: pd.DataFrame):
 def extrair_ano_uf_do_arquivo(path: Path):
     """
     Extrai ano e UF do nome do arquivo, mesmo quando dividido:
-    Exemplo:
-        votacao_candidato_munzona_2022_SP_1.csv
-        votacao_candidato_munzona_2022_SP_2.csv
-        votacao_candidato_munzona_2022_AC.csv
-        votacao_partido_munzona_2022_BR.csv
+      - votacao_candidato_munzona_2018_SP.csv
+      - votacao_candidato_munzona_2018_SP_9.csv
+      - votacao_candidato_munzona_2018_PB_PARTE2.csv
     """
-
     nome = path.name.upper()
     ano = None
     uf = None
 
-    # procura ano
-    ano_match = re.search(r"20\d{2}", nome)
-    if ano_match:
-        ano = ano_match.group(0)
+    # ano: primeiro 19xx ou 20xx
+    m = re.search(r"(19|20)\d{2}", nome)
+    if m:
+        ano = m.group(0)
 
-    # procura UF
-    uf_match = re.search(
-        r"_("
-        r"BRASIL|BR|AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|"
-        r"RS|RO|RR|SC|SP|SE|TO"
-        r")(_|\.)",
-        nome,
+    # UF: aceita sufixo depois da UF (_SP_9.csv, _SP_PARTE2.csv, etc.)
+    uf_pattern = (
+        r"_(BRASIL|BR|AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|"
+        r"RS|RO|RR|SC|SP|SE|TO)(?:[_\.]|$)"
     )
-
-    if uf_match:
-        uf = uf_match.group(1)
+    m = re.search(uf_pattern, nome)
+    if m:
+        uf = m.group(1)
 
     return ano, uf
 
@@ -98,12 +91,43 @@ def extrair_ano_uf_do_arquivo(path: Path):
 def processar_arquivo(path: Path) -> pd.DataFrame | None:
     print(f"\n📄 Lendo: {path.name}")
 
-    df = pd.read_csv(path, sep=SEP, encoding=ENCODING, dtype=str, low_memory=False)
+    # 1) Tenta ler normalmente
+    try:
+        df = pd.read_csv(
+            path,
+            sep=SEP,
+            encoding=ENCODING,
+            dtype=str,
+            low_memory=False,
+        )
+    except pd.errors.ParserError as e:
+        # Erro de parsing (por exemplo: EOF inside string) → tenta modo mais tolerante
+        print(f"   ⚠ Erro de parsing em {path.name}: {e}")
+        print("   ⚠ Tentando novamente com engine='python' e ignorando linhas problemáticas (on_bad_lines='skip')...")
+        try:
+            df = pd.read_csv(
+                path,
+                sep=SEP,
+                encoding=ENCODING,
+                dtype=str,
+                low_memory=False,
+                engine="python",
+                on_bad_lines="skip",  # pandas >= 1.3
+            )
+        except Exception as e2:
+            print(f"   ❌ Falha ao ler {path.name} mesmo com engine='python'. Arquivo será ignorado.")
+            print(f"   ❌ Erro: {e2}")
+            return None
+    except Exception as e:
+        print(f"   ❌ Erro inesperado ao ler {path.name}: {e}. Arquivo será ignorado.")
+        return None
+
+    # Limpa marcadores especiais
     df = df.replace({"#NULO": None, "#NE": None})
 
     cols = detectar_colunas(df)
     if cols is None:
-        print("⚠ Arquivo ignorado — não contém colunas de votação reconhecidas.")
+        print("⚠ Não parece ser arquivo de votação de candidato/partido. Pulando.")
         return None
 
     vote_col = cols["vote"]
@@ -122,7 +146,7 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
     if secao_col:
         print(f"   → Coluna seção: {secao_col}")
 
-    # Converte votos para inteiro
+    # Converte votos para int
     df[vote_col] = pd.to_numeric(df[vote_col], errors="coerce").fillna(0).astype(int)
 
     # Ano e UF
@@ -130,7 +154,7 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
     ano = ano or df.get("ANO_ELEICAO", pd.Series([None])).iloc[0]
     uf = uf_arquivo or df.get("SG_UF", pd.Series([None])).iloc[0]
 
-    # Extração de colunas adicionais
+    # Outras colunas opcionais
     turno = df["NR_TURNO"] if "NR_TURNO" in df.columns else None
     cd_municipio = df["CD_MUNICIPIO"] if "CD_MUNICIPIO" in df.columns else None
     nm_municipio = df["NM_MUNICIPIO"] if "NM_MUNICIPIO" in df.columns else None
@@ -138,14 +162,14 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
     ds_cargo = df["DS_CARGO"] if "DS_CARGO" in df.columns else None
     nr_candidato = df["NR_CANDIDATO"] if "NR_CANDIDATO" in df.columns else None
 
-    # Local de votação (varia por layout)
+    # Possíveis colunas de local de votação (dependem do layout)
     cd_local = None
     nm_local = None
     for col in df.columns:
-        u = col.upper()
-        if cd_local is None and ("CD_LOCAL_VOT" in u or "NR_LOCAL_VOT" in u):
+        upper = col.upper()
+        if cd_local is None and ("CD_LOCAL_VOT" in upper or "NR_LOCAL_VOT" in upper):
             cd_local = df[col]
-        if nm_local is None and ("NM_LOCAL_VOT" in u or "DS_LOCAL_VOT" in u):
+        if nm_local is None and ("NM_LOCAL_VOT" in upper or "DS_LOCAL_VOT" in upper):
             nm_local = df[col]
 
     base_cols = {
@@ -157,9 +181,9 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
         "nm_municipio": nm_municipio,
         "cd_cargo": cd_cargo,
         "ds_cargo": ds_cargo,
-        "nm_candidato": df[cand_col] if cand_col else None,
+        "nm_candidato": df[cand_col] if cand_col is not None else None,
         "nr_candidato": nr_candidato,
-        "sg_partido": df[party_col] if party_col else None,
+        "sg_partido": df[party_col] if party_col is not None else None,
         "nr_zona": df[zona_col] if zona_col else None,
         "nr_secao": df[secao_col] if secao_col else None,
         "cd_local_votacao": cd_local,
@@ -175,13 +199,13 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
 def ingest_all(clear_table: bool = True) -> int:
     """
     Lê todos os CSV no volume /app/dados_tse_volume e insere na tabela 'votos'.
+    Se clear_table=True, derruba e recria a tabela 'votos'.
     """
-
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
     if clear_table:
-        print("🗑 Limpando tabela 'votos' (DROP TABLE IF EXISTS)...")
+        print("\n🗑 Limpando tabela 'votos' (DROP TABLE IF EXISTS)...")
         cur.execute("DROP TABLE IF EXISTS votos")
         conn.commit()
 
@@ -193,7 +217,6 @@ def ingest_all(clear_table: bool = True) -> int:
         return 0
 
     print(f"📁 Iniciando ingestão a partir de: {DATA_DIR}")
-
     arquivos = sorted(DATA_DIR.glob("*.csv"))
 
     if not arquivos:
