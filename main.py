@@ -7,12 +7,14 @@ import sqlite3
 from typing import Optional, List
 from pathlib import Path
 import os
+import zipfile
+import shutil
 
 from ingestor import ingest_all, DB_PATH
 
 app = FastAPI(title="API TSE - VELEITORAL")
 
-# pasta do volume do Railway para CSVs (TODOS vão para cá agora)
+# pasta do volume do Railway para CSVs (TODOS os CSV ficam aqui agora)
 UPLOAD_DIR = "/app/dados_tse_volume"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -97,12 +99,21 @@ def get_conn():
 
 
 def contar_registros() -> int:
+    """
+    Conta registros na tabela 'votos'.
+    Se a tabela ainda não existir, retorna 0 ao invés de estourar erro.
+    """
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) AS c FROM votos")
-    row = cur.fetchone()
-    conn.close()
-    return row["c"] if row else 0
+    try:
+        cur.execute("SELECT COUNT(*) AS c FROM votos")
+        row = cur.fetchone()
+        return row["c"] if row else 0
+    except sqlite3.OperationalError:
+        # tabela 'votos' ainda não existe
+        return 0
+    finally:
+        conn.close()
 
 
 # =============================
@@ -133,6 +144,10 @@ def root():
 
 @app.post("/reload")
 def reload_dados():
+    """
+    Reprocessa todos os CSV disponíveis (no volume /app/dados_tse_volume)
+    e recria a tabela 'votos'.
+    """
     total = ingest_all(clear_table=True)
     return {
         "status": "ok",
@@ -142,7 +157,7 @@ def reload_dados():
 
 
 # =============================
-# ENDPOINT DE UPLOAD (STREAMING, SEM LIMITE DE 100MB)
+# ENDPOINTS DE UPLOAD
 # =============================
 
 CHUNK_SIZE = 1024 * 1024  # 1MB por chunk
@@ -192,6 +207,97 @@ async def upload_csv(file: UploadFile = File(...)):
         "arquivo": file.filename,
         "caminho": str(destino),
         "tamanho_mb": round(tamanho_mb, 2),
+    }
+
+
+@app.post("/upload-zip")
+async def upload_zip(file: UploadFile = File(...)):
+    """
+    Recebe um .zip contendo vários arquivos .csv e extrai todos
+    para o volume (/app/dados_tse_volume).
+
+    Fluxo:
+    - Salva o ZIP em disco em streaming (1MB por vez)
+    - Abre o ZIP
+    - Extrai apenas os arquivos .csv (ignorando o resto)
+    - Grava cada CSV em /app/dados_tse_volume
+    - Apaga o ZIP ao final para economizar espaço
+    """
+
+    if not file.filename.lower().endswith(".zip"):
+        raise HTTPException(
+            status_code=400,
+            detail="Envie um arquivo .zip contendo os CSV.",
+        )
+
+    zip_path = Path(UPLOAD_DIR) / file.filename
+    tamanho_bytes = 0
+
+    # Salva o zip em disco em streaming
+    try:
+        with open(zip_path, "wb") as f:
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                tamanho_bytes += len(chunk)
+                f.write(chunk)
+    except Exception as e:
+        if zip_path.exists():
+            zip_path.unlink()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao salvar arquivo .zip no volume: {e}",
+        )
+
+    tamanho_mb = tamanho_bytes / (1024 * 1024)
+
+    # Extrai os CSV de dentro do zip
+    extraidos: List[str] = []
+    try:
+        with zipfile.ZipFile(zip_path, "r") as z:
+            for member in z.namelist():
+                # só queremos arquivos .csv
+                if not member.lower().endswith(".csv"):
+                    continue
+
+                # evita path traversal: usa só o nome do arquivo
+                nome_arquivo = Path(member).name
+                destino_csv = Path(UPLOAD_DIR) / nome_arquivo
+
+                # extrai "na mão" para permitir overwrite e evitar paths estranhos
+                with z.open(member) as src, open(destino_csv, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+
+                extraidos.append(str(destino_csv))
+
+    except zipfile.BadZipFile:
+        zip_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Arquivo .zip inválido ou corrompido.",
+        )
+    except Exception as e:
+        zip_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao extrair arquivos do .zip: {e}",
+        )
+    finally:
+        # remove o zip após extrair, para economizar espaço no volume
+        zip_path.unlink(missing_ok=True)
+
+    return {
+        "status": "ok",
+        "mensagem": (
+            f"Arquivo {file.filename} (≈ {tamanho_mb:.2f} MB) enviado e "
+            f"{len(extraidos)} arquivo(s) .csv extraído(s) para {UPLOAD_DIR}. "
+            "Agora você pode chamar /reload para processar todos os CSV."
+        ),
+        "arquivo_zip": file.filename,
+        "tamanho_zip_mb": round(tamanho_mb, 2),
+        "total_csv_extraidos": len(extraidos),
+        "arquivos_csv": extraidos,
     }
 
 
@@ -470,8 +576,11 @@ def estatisticas():
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT COUNT(*) AS c FROM votos")
-    total = cur.fetchone()["c"]
+    try:
+        cur.execute("SELECT COUNT(*) AS c FROM votos")
+        total = cur.fetchone()["c"]
+    except sqlite3.OperationalError:
+        total = 0
 
     cur.execute("SELECT DISTINCT ano FROM votos WHERE ano IS NOT NULL")
     anos = sorted({r["ano"] for r in cur.fetchall() if r["ano"]})
