@@ -12,7 +12,7 @@ from ingestor import ingest_all, DB_PATH
 
 app = FastAPI(title="API TSE - VELEITORAL")
 
-# pasta do volume do Railway para CSVs grandes (>= 100MB)
+# pasta do volume do Railway para CSVs (TODOS vão para cá agora)
 UPLOAD_DIR = "/app/dados_tse_volume"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -142,24 +142,20 @@ def reload_dados():
 
 
 # =============================
-# ENDPOINT DE UPLOAD (STREAMING)
+# ENDPOINT DE UPLOAD (STREAMING, SEM LIMITE DE 100MB)
 # =============================
 
-TAMANHO_MIN_VOLUME_MB = 100  # apenas arquivos >= 100 MB vão para o volume
-CHUNK_SIZE = 1024 * 1024     # 1MB por chunk
+CHUNK_SIZE = 1024 * 1024  # 1MB por chunk
 
 
 @app.post("/upload")
 async def upload_csv(file: UploadFile = File(...)):
     """
-    Recebe um arquivo CSV e, SE TIVER PELO MENOS 100 MB,
-    salva no volume (/app/dados_tse_volume).
+    Recebe um arquivo CSV de qualquer tamanho e salva no volume (/app/dados_tse_volume).
 
     Implementação em streaming:
     - Lê o arquivo em blocos (chunks) de 1MB
     - Vai gravando direto no disco
-    - Soma o tamanho total à medida que grava
-    - Se no final tiver < 100MB, apaga o arquivo e retorna erro 400
     """
 
     if not file.filename.lower().endswith(".csv"):
@@ -186,18 +182,6 @@ async def upload_csv(file: UploadFile = File(...)):
         )
 
     tamanho_mb = tamanho_bytes / (1024 * 1024)
-
-    if tamanho_mb < TAMANHO_MIN_VOLUME_MB:
-        if destino.exists():
-            destino.unlink()
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Arquivo tem apenas {tamanho_mb:.2f} MB. "
-                f"A API só armazena no volume arquivos >= {TAMANHO_MIN_VOLUME_MB} MB. "
-                "Para arquivos menores, mantenha-os no repositório Git em 'dados_tse/'."
-            ),
-        )
 
     return {
         "status": "ok",
