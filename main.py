@@ -12,12 +12,12 @@ from ingestor import ingest_all, DB_PATH
 
 app = FastAPI(title="API TSE - VELEITORAL")
 
-# pasta onde os arquivos enviados serão salvos (volume do Railway)
-UPLOAD_DIR = "/app/dados_tse"
+# pasta do volume do Railway para CSVs grandes (>= 100MB)
+# ATENÇÃO: este caminho deve ser igual ao "Mount Path" configurado no volume do Railway
+UPLOAD_DIR = "/app/dados_tse_volume"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 BASE_DIR = Path(__file__).parent
-
 
 # =============================
 # MODELOS DE RESPOSTA
@@ -112,7 +112,9 @@ def contar_registros() -> int:
 
 @app.on_event("startup")
 def startup_event():
-    # Ao subir a API, faz ingestão automática dos CSV na pasta /app/dados_tse
+    # Ao subir a API, faz ingestão automática dos CSV:
+    # - dados_tse/ (no git, arquivos menores)
+    # - /app/dados_tse_volume (volume, arquivos grandes)
     print("\n🚀 Iniciando API e carregando dados do TSE...")
     total = ingest_all(clear_table=True)
     print(f"🚀 API pronta. Registros carregados: {total}")
@@ -136,7 +138,10 @@ def root():
 @app.post("/reload")
 def reload_dados():
     """
-    Reprocessa todos os CSV da pasta /app/dados_tse e recria a tabela votos.
+    Reprocessa todos os CSV das pastas:
+    - ./dados_tse            (arquivos menores, no git)
+    - /app/dados_tse_volume  (arquivos grandes, no volume)
+    e recria a tabela votos.
     """
     total = ingest_all(clear_table=True)
     return {
@@ -150,26 +155,52 @@ def reload_dados():
 # ENDPOINT DE UPLOAD
 # =============================
 
+TAMANHO_MIN_VOLUME_MB = 100  # apenas arquivos >= 100 MB vão para o volume
+
+
 @app.post("/upload")
 async def upload_csv(file: UploadFile = File(...)):
     """
-    Recebe um arquivo CSV e salva no volume (/app/dados_tse).
-    Use via Swagger: /docs -> POST /upload.
+    Recebe um arquivo CSV e, SE TIVER PELO MENOS 100 MB,
+    salva no volume (/app/dados_tse_volume).
+
+    Regras:
+    - Arquivos < 100 MB NÃO são armazenados no volume.
+      A ideia é mantê-los no repositório git em ./dados_tse/.
+    - Após enviar um arquivo grande e ser salvo no volume,
+      você pode chamar /reload para reprocessar tudo.
     """
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Envie apenas arquivos .csv")
 
-    destino = Path(UPLOAD_DIR) / file.filename
+    # Lê o conteúdo para medir o tamanho
     conteudo = await file.read()
+    tamanho_bytes = len(conteudo)
+    tamanho_mb = tamanho_bytes / (1024 * 1024)
 
+    if tamanho_mb < TAMANHO_MIN_VOLUME_MB:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Arquivo tem apenas {tamanho_mb:.2f} MB. "
+                f"A API só armazena no volume arquivos >= {TAMANHO_MIN_VOLUME_MB} MB. "
+                "Para arquivos menores, mantenha-os no repositório Git em 'dados_tse/'."
+            ),
+        )
+
+    destino = Path(UPLOAD_DIR) / file.filename
     with open(destino, "wb") as f:
         f.write(conteudo)
 
     return {
         "status": "ok",
-        "mensagem": f"Arquivo {file.filename} salvo em {destino}. Agora você pode chamar /reload para processar.",
+        "mensagem": (
+            f"Arquivo {file.filename} (≈ {tamanho_mb:.2f} MB) salvo em {destino}. "
+            "Agora você pode chamar /reload para processar junto com os demais CSV."
+        ),
         "arquivo": file.filename,
         "caminho": str(destino),
+        "tamanho_mb": round(tamanho_mb, 2),
     }
 
 

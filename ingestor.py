@@ -8,7 +8,14 @@ import re
 # ==============================
 
 BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "dados_tse"
+
+# Pasta com CSV menores, versionados no git
+DATA_DIR_REPO = BASE_DIR / "dados_tse"
+
+# Pasta do volume (Railway) com CSV grandes (>= 100MB)
+# ATENÇÃO: este caminho deve ser igual ao "Mount Path" configurado no volume do Railway
+DATA_DIR_VOLUME = Path("/app/dados_tse_volume")
+
 DB_PATH = BASE_DIR / "tse_eleicoes.db"
 
 SEP = ";"
@@ -80,7 +87,7 @@ def extrair_ano_uf_do_arquivo(path: Path):
 
 
 def processar_arquivo(path: Path) -> pd.DataFrame | None:
-    print(f"\n📄 Lendo: {path.name}")
+    print(f"\n📄 Lendo: {path}")
     df = pd.read_csv(path, sep=SEP, encoding=ENCODING, dtype=str)
     df = df.replace({"#NULO": None, "#NE": None})
 
@@ -153,27 +160,19 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
     return result
 
 
-def ingest_all(clear_table: bool = True) -> int:
+def _ingest_from_dir(dir_path: Path, conn: sqlite3.Connection) -> int:
     """
-    Lê todos os CSV em DATA_DIR e insere na tabela 'votos'.
-    Se clear_table=True, apaga a tabela antes (drop + recria com novo esquema).
+    Lê todos os CSV em um diretório e insere na tabela 'votos'.
+    Retorna o total de registros inseridos.
     """
-    conn = sqlite3.connect(DB_PATH)
-
-    cur = conn.cursor()
-    if clear_table:
-        # derruba a tabela para permitir novo esquema com mais colunas
-        cur.execute("DROP TABLE IF EXISTS votos")
-        conn.commit()
-
-    total = 0
-
-    if not DATA_DIR.exists():
-        print(f"❌ Pasta de dados não encontrada: {DATA_DIR}")
-        conn.close()
+    if not dir_path.exists():
+        print(f"📁 Pasta de dados não encontrada: {dir_path}. Pulando.")
         return 0
 
-    for csv_path in sorted(DATA_DIR.glob("*.csv")):
+    print(f"\n📁 Iniciando ingestão a partir de: {dir_path}")
+    total = 0
+
+    for csv_path in sorted(dir_path.glob("*.csv")):
         df_proc = processar_arquivo(csv_path)
         if df_proc is not None and not df_proc.empty:
             # primeira chamada cria a tabela 'votos' com todas as colunas do DataFrame
@@ -181,6 +180,36 @@ def ingest_all(clear_table: bool = True) -> int:
             total += len(df_proc)
             print("   ✔ Inserido na tabela 'votos'.")
 
+    print(f"✅ Concluído diretório {dir_path}. Registros inseridos: {total}")
+    return total
+
+
+def ingest_all(clear_table: bool = True) -> int:
+    """
+    Lê todos os CSV em:
+    - DATA_DIR_REPO   (./dados_tse, arquivos menores, versionados no git)
+    - DATA_DIR_VOLUME (/app/dados_tse_volume, arquivos grandes, no volume)
+
+    e insere na tabela 'votos'.
+    Se clear_table=True, apaga a tabela antes (drop + recria com novo esquema).
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    if clear_table:
+        # derruba a tabela para permitir novo esquema com mais colunas
+        print("\n🗑  Limpando tabela 'votos' (DROP TABLE IF EXISTS)...")
+        cur.execute("DROP TABLE IF EXISTS votos")
+        conn.commit()
+
+    total = 0
+
+    # Ingestão dos arquivos menores (repo)
+    total += _ingest_from_dir(DATA_DIR_REPO, conn)
+
+    # Ingestão dos arquivos grandes (volume)
+    total += _ingest_from_dir(DATA_DIR_VOLUME, conn)
+
     conn.close()
-    print(f"\n✅ Ingestão concluída. Registros inseridos: {total}")
+    print(f"\n✅ Ingestão concluída. Registros inseridos (total): {total}")
     return total
