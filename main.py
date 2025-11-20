@@ -142,11 +142,11 @@ def reload_dados():
 
 
 # =============================
-# ENDPOINT DE UPLOAD (VERSÃO OTIMIZADA)
+# ENDPOINT DE UPLOAD (STREAMING)
 # =============================
 
 TAMANHO_MIN_VOLUME_MB = 100  # apenas arquivos >= 100 MB vão para o volume
-CHUNK_SIZE = 1024 * 1024  # 1MB por chunk
+CHUNK_SIZE = 1024 * 1024     # 1MB por chunk
 
 
 @app.post("/upload")
@@ -216,8 +216,11 @@ async def upload_csv(file: UploadFile = File(...)):
 # =============================
 
 @app.get("/votos/totais", response_model=List[VotoTotal])
-def votos_totais(ano: Optional[str] = None, uf: Optional[str] = None,
-                 limite: int = Query(default=50, ge=1, le=1000)):
+def votos_totais(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    limite: int = Query(default=50, ge=1, le=1000),
+):
     conn = get_conn()
     cur = conn.cursor()
 
@@ -227,7 +230,7 @@ def votos_totais(ano: Optional[str] = None, uf: Optional[str] = None,
         FROM votos
         WHERE 1=1
     """
-    params = []
+    params: list = []
 
     if ano:
         sql += " AND ano = ?"
@@ -265,7 +268,7 @@ def votos_por_zona(
         FROM votos
         WHERE 1=1
     """
-    params = []
+    params: list = []
 
     if ano:
         sql += " AND ano = ?"
@@ -305,7 +308,7 @@ def votos_por_municipio(
         FROM votos
         WHERE 1=1
     """
-    params = []
+    params: list = []
 
     if ano:
         sql += " AND ano = ?"
@@ -343,7 +346,7 @@ def votos_por_cargo(
         FROM votos
         WHERE 1=1
     """
-    params = []
+    params: list = []
 
     if ano:
         sql += " AND ano = ?"
@@ -383,7 +386,7 @@ def listar_candidatos(
         FROM votos
         WHERE 1=1
     """
-    params = []
+    params: list = []
 
     if ano:
         sql += " AND ano = ?"
@@ -421,7 +424,7 @@ def listar_partidos(
         FROM votos
         WHERE 1=1
     """
-    params = []
+    params: list = []
 
     if ano:
         sql += " AND ano = ?"
@@ -456,7 +459,7 @@ def ranking_partidos(
         FROM votos
         WHERE 1=1
     """
-    params = []
+    params: list = []
 
     if ano:
         sql += " AND ano = ?"

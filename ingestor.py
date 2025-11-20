@@ -13,7 +13,6 @@ BASE_DIR = Path(__file__).parent
 DATA_DIR_REPO = BASE_DIR / "dados_tse"
 
 # Pasta do volume (Railway) com CSV grandes (>= 100MB)
-# ATENÇÃO: este caminho deve ser igual ao "Mount Path" configurado no volume do Railway
 DATA_DIR_VOLUME = Path("/app/dados_tse_volume")
 
 DB_PATH = BASE_DIR / "tse_eleicoes.db"
@@ -66,20 +65,27 @@ def detectar_colunas(df: pd.DataFrame):
 def extrair_ano_uf_do_arquivo(path: Path):
     """
     Tenta extrair ano e UF a partir do nome do arquivo.
-    Ex: votacao_candidato_munzona_2024_SP.csv
+
+    Funciona para nomes como:
+      - votacao_candidato_munzona_2022_SP.csv
+      - votacao_candidato_munzona_2022_SP_1.csv
+      - votacao_candidato_munzona_2022_PB_PARTE2.csv
     """
     nome = path.name.upper()
     ano = None
     uf = None
 
-    m = re.search(r"20\d{2}", nome)
+    # ano: pega o primeiro 19xx ou 20xx que aparecer
+    m = re.search(r"(19|20)\d{2}", nome)
     if m:
         ano = m.group(0)
 
-    m = re.search(
-        r"_(BRASIL|BR|AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\.",
-        nome,
+    # UF: aceita padrões com sufixo depois da UF (ex: _SP_1.CSV, _SP_PARTE1.CSV)
+    uf_pattern = (
+        r"_(BRASIL|BR|AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|"
+        r"RS|RO|RR|SC|SP|SE|TO)(?:[_\.]|$)"
     )
+    m = re.search(uf_pattern, nome)
     if m:
         uf = m.group(1)
 
@@ -175,7 +181,6 @@ def _ingest_from_dir(dir_path: Path, conn: sqlite3.Connection) -> int:
     for csv_path in sorted(dir_path.glob("*.csv")):
         df_proc = processar_arquivo(csv_path)
         if df_proc is not None and not df_proc.empty:
-            # primeira chamada cria a tabela 'votos' com todas as colunas do DataFrame
             df_proc.to_sql("votos", conn, if_exists="append", index=False)
             total += len(df_proc)
             print("   ✔ Inserido na tabela 'votos'.")
@@ -197,7 +202,6 @@ def ingest_all(clear_table: bool = True) -> int:
     cur = conn.cursor()
 
     if clear_table:
-        # derruba a tabela para permitir novo esquema com mais colunas
         print("\n🗑  Limpando tabela 'votos' (DROP TABLE IF EXISTS)...")
         cur.execute("DROP TABLE IF EXISTS votos")
         conn.commit()
