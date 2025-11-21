@@ -27,12 +27,14 @@ BASE_DIR = Path(__file__).parent
 class VotoTotal(BaseModel):
     ano: Optional[str]
     uf: Optional[str]
+    cd_municipio: Optional[str] = None
+    nm_municipio: Optional[str] = None
+    cd_cargo: Optional[str] = None
+    ds_cargo: Optional[str]
     nr_candidato: Optional[str]
     nm_candidato: Optional[str]
     sg_partido: Optional[str]
-    ds_cargo: Optional[str]
     total_votos: int
-    nm_municipio: Optional[str] = None
 
 
 class VotoZona(BaseModel):
@@ -331,8 +333,19 @@ async def upload_zip(file: UploadFile = File(...)):
 def votos_totais(
     ano: Optional[str] = None,
     uf: Optional[str] = None,
+    nr_turno: Optional[str] = None,
+    cd_municipio: Optional[str] = None,
+    cd_cargo: Optional[str] = None,
+    nr_zona: Optional[str] = None,
+    nr_secao: Optional[str] = None,
+    nr_candidato: Optional[str] = None,
+    sg_partido: Optional[str] = None,
     limite: int = Query(default=50, ge=1, le=1000),
 ):
+    """
+    Totais de votos agregados com filtros opcionais.
+    Quando cd_municipio e cd_cargo forem enviados, eles são aplicados no WHERE.
+    """
     conn = get_conn()
     cur = conn.cursor()
 
@@ -340,12 +353,14 @@ def votos_totais(
         SELECT
             ano,
             uf,
-            nr_candidato,
-            nm_candidato,
-            sg_partido,
+            cd_municipio,
+            COALESCE(nm_municipio, 'Estadual') AS nm_municipio,
+            cd_cargo,
             ds_cargo,
-            SUM(votos) AS total_votos,
-            NULL AS nm_municipio
+            nr_candidato,
+            COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
+            sg_partido,
+            SUM(votos) AS total_votos
         FROM votos
         WHERE 1=1
     """
@@ -357,9 +372,34 @@ def votos_totais(
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
+    if nr_turno:
+        sql += " AND nr_turno = ?"
+        params.append(nr_turno)
+    if cd_municipio:
+        sql += " AND cd_municipio = ?"
+        params.append(cd_municipio)
+    if cd_cargo:
+        sql += " AND cd_cargo = ?"
+        params.append(cd_cargo)
+    if nr_zona:
+        sql += " AND nr_zona = ?"
+        params.append(nr_zona)
+    if nr_secao:
+        sql += " AND nr_secao = ?"
+        params.append(nr_secao)
+    if nr_candidato:
+        sql += " AND nr_candidato = ?"
+        params.append(nr_candidato)
+    if sg_partido:
+        sql += " AND sg_partido = ?"
+        params.append(sg_partido)
 
     sql += """
-        GROUP BY ano, uf, nr_candidato, nm_candidato, sg_partido, ds_cargo
+        GROUP BY ano, uf,
+                 cd_municipio, nm_municipio,
+                 cd_cargo, ds_cargo,
+                 nr_candidato, nm_candidato,
+                 sg_partido
         ORDER BY total_votos DESC
         LIMIT ?
     """
