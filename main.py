@@ -40,10 +40,18 @@ class VotoTotal(BaseModel):
 class VotoZona(BaseModel):
     ano: Optional[str]
     uf: Optional[str]
+    nr_turno: Optional[str]
+    cd_municipio: Optional[str]
+    nm_municipio: Optional[str]
+    cd_cargo: Optional[str]
+    ds_cargo: Optional[str]
     nm_candidato: Optional[str]
+    nr_candidato: Optional[str]
     sg_partido: Optional[str]
     nr_zona: Optional[str]
     nr_secao: Optional[str]
+    cd_local_votacao: Optional[str]
+    nm_local_votacao: Optional[str]
     votos: int
 
 
@@ -415,9 +423,19 @@ def votos_totais(
 def votos_por_zona(
     ano: Optional[str] = None,
     uf: Optional[str] = None,
-    zona: Optional[str] = None,
-    limite: int = Query(default=100, ge=1, le=5000),
+    cd_municipio: Optional[str] = None,
+    cd_cargo: Optional[str] = None,
+    nr_turno: Optional[str] = None,
+    nr_zona: Optional[str] = None,
+    nr_secao: Optional[str] = None,
+    nr_candidato: Optional[str] = None,
+    sg_partido: Optional[str] = None,
+    limite: int = Query(default=200, ge=1, le=5000),
 ):
+    """
+    Retorna votos agregados por zona/seção, com todos os campos de contexto:
+    turno, município, cargo, candidato, local de votação etc.
+    """
     conn = get_conn()
     cur = conn.cursor()
 
@@ -425,10 +443,18 @@ def votos_por_zona(
         SELECT
             ano,
             uf,
-            nm_candidato,
+            nr_turno,
+            cd_municipio,
+            COALESCE(nm_municipio, 'Estadual') AS nm_municipio,
+            cd_cargo,
+            ds_cargo,
+            COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
+            nr_candidato,
             sg_partido,
             nr_zona,
             nr_secao,
+            cd_local_votacao,
+            nm_local_votacao,
             SUM(votos) AS votos
         FROM votos
         WHERE 1=1
@@ -441,12 +467,44 @@ def votos_por_zona(
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
-    if zona:
+    if cd_municipio:
+        sql += " AND cd_municipio = ?"
+        params.append(cd_municipio)
+    if cd_cargo:
+        sql += " AND cd_cargo = ?"
+        params.append(cd_cargo)
+    if nr_turno:
+        sql += " AND nr_turno = ?"
+        params.append(nr_turno)
+    if nr_zona:
         sql += " AND nr_zona = ?"
-        params.append(zona)
+        params.append(nr_zona)
+    if nr_secao:
+        sql += " AND nr_secao = ?"
+        params.append(nr_secao)
+    if nr_candidato:
+        sql += " AND nr_candidato = ?"
+        params.append(nr_candidato)
+    if sg_partido:
+        sql += " AND sg_partido = ?"
+        params.append(sg_partido)
 
     sql += """
-        GROUP BY ano, uf, nm_candidato, sg_partido, nr_zona, nr_secao
+        GROUP BY
+            ano,
+            uf,
+            nr_turno,
+            cd_municipio,
+            nm_municipio,
+            cd_cargo,
+            ds_cargo,
+            nm_candidato,
+            nr_candidato,
+            sg_partido,
+            nr_zona,
+            nr_secao,
+            cd_local_votacao,
+            nm_local_votacao
         ORDER BY votos DESC
         LIMIT ?
     """
@@ -455,6 +513,7 @@ def votos_por_zona(
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
+
     return [VotoZona(**dict(r)) for r in rows]
 
 
