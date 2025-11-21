@@ -1,5 +1,4 @@
-# main.py — API VELEITORAL (versão otimizada e compatível com o Lovable)
-# --------------------------------------------------------------
+# main.py — API VELEITORAL (versão final, completa e otimizada)
 
 from fastapi import FastAPI, Query, UploadFile, File, HTTPException
 from pydantic import BaseModel
@@ -16,6 +15,7 @@ app = FastAPI(title="API TSE - VELEITORAL")
 
 UPLOAD_DIR = "/app/dados_tse_volume"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 
 # ======================================================
 # MODELOS DE RESPOSTA
@@ -37,8 +37,8 @@ class VotoTotal(BaseModel):
     nm_candidato: Optional[str]
     sg_partido: Optional[str]
     ds_cargo: Optional[str]
-    nm_municipio: Optional[str] = None
     total_votos: int
+    nm_municipio: Optional[str] = None
 
 
 class VotoZona(BaseModel):
@@ -82,18 +82,18 @@ def get_conn():
 
 
 # ======================================================
-# STARTUP — CARREGAR CSV DO VOLUME
+# STARTUP — INGESTÃO AUTOMÁTICA SEM DUPLICAR
 # ======================================================
 
 @app.on_event("startup")
 def startup_event():
     print("🚀 Iniciando ingestão...")
-    ingest_all(clear_table=False)
+    ingest_all(clear_table=True)    # <----- IMPORTANTE: NÃO REMOVE!
     print("🚀 Ingestão concluída.")
 
 
 # ======================================================
-# ENDPOINTS BÁSICOS
+# ENDPOINT RAIZ
 # ======================================================
 
 @app.get("/")
@@ -119,7 +119,11 @@ def estatisticas():
     cur = conn.cursor()
 
     # total de registros + soma de votos
-    cur.execute("SELECT COUNT(*) AS total_registros, SUM(votos) AS total_votos FROM votos")
+    cur.execute("""
+        SELECT COUNT(*) AS total_registros,
+               SUM(votos) AS total_votos
+        FROM votos
+    """)
     row = cur.fetchone()
     total_registros = row["total_registros"]
     total_votos = row["total_votos"] or 0
@@ -205,7 +209,7 @@ def votos_totais(
 
 
 # ======================================================
-# CONSULTAS COMPLEMENTARES
+# VOTOS POR ZONA / SEÇÃO
 # ======================================================
 
 @app.get("/votos/zona", response_model=List[VotoZona])
@@ -251,6 +255,99 @@ def votos_por_zona(
 
 
 # ======================================================
+# VOTOS POR MUNICÍPIO
+# ======================================================
+
+@app.get("/votos/municipio", response_model=List[VotoMunicipio])
+def votos_por_municipio(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    limite: int = 200
+):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    sql = """
+        SELECT ano, uf,
+               cd_municipio,
+               nm_municipio,
+               nm_candidato,
+               sg_partido,
+               SUM(votos) AS votos
+        FROM votos
+        WHERE nm_candidato IS NOT NULL
+    """
+    params = []
+
+    if ano:
+        sql += " AND ano = ?"
+        params.append(ano)
+    if uf:
+        sql += " AND uf = ?"
+        params.append(uf)
+
+    sql += """
+        GROUP BY ano, uf, cd_municipio, nm_municipio, nm_candidato, sg_partido
+        ORDER BY votos DESC
+        LIMIT ?
+    """
+    params.append(limite)
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+    return [VotoMunicipio(**dict(r)) for r in rows]
+
+
+# ======================================================
+# VOTOS POR CARGO
+# ======================================================
+
+@app.get("/votos/cargo", response_model=List[VotoCargo])
+def votos_por_cargo(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    cd_cargo: Optional[str] = None,
+    limite: int = 100
+):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    sql = """
+        SELECT ano, uf,
+               cd_cargo, ds_cargo,
+               nm_candidato,
+               sg_partido,
+               SUM(votos) AS votos
+        FROM votos
+        WHERE nm_candidato IS NOT NULL
+    """
+    params = []
+
+    if ano:
+        sql += " AND ano = ?"
+        params.append(ano)
+    if uf:
+        sql += " AND uf = ?"
+        params.append(uf)
+    if cd_cargo:
+        sql += " AND cd_cargo = ?"
+        params.append(cd_cargo)
+
+    sql += """
+        GROUP BY ano, uf, cd_cargo, ds_cargo, nm_candidato, sg_partido
+        ORDER BY votos DESC
+        LIMIT ?
+    """
+    params.append(limite)
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+    return [VotoCargo(**dict(r)) for r in rows]
+
+
+# ======================================================
 # UPLOAD CSV / ZIP
 # ======================================================
 
@@ -267,13 +364,15 @@ async def upload_zip(file: UploadFile = File(...)):
     zip_path = Path(UPLOAD_DIR) / file.filename
     with open(zip_path, "wb") as f:
         f.write(await file.read())
+
     with zipfile.ZipFile(zip_path, "r") as z:
         z.extractall(UPLOAD_DIR)
+
     return {"status": "ok", "mensagem": "ZIP extraído"}
 
 
 # ======================================================
-# CLEAR VOLUME
+# LIMPAR VOLUME
 # ======================================================
 
 @app.post("/clear-volume")
