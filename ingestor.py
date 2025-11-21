@@ -162,6 +162,9 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
     ds_cargo = df["DS_CARGO"] if "DS_CARGO" in df.columns else None
     nr_candidato = df["NR_CANDIDATO"] if "NR_CANDIDATO" in df.columns else None
 
+    # ✅ Status total no turno (vem do CSV como DS_SIT_TOT_TURNO)
+    ds_sit_tot_turno = df["DS_SIT_TOT_TURNO"] if "DS_SIT_TOT_TURNO" in df.columns else None
+
     # Possíveis colunas de local de votação (dependem do layout)
     cd_local = None
     nm_local = None
@@ -188,6 +191,7 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
         "nr_secao": df[secao_col] if secao_col else None,
         "cd_local_votacao": cd_local,
         "nm_local_votacao": nm_local,
+        "ds_sit_tot_turno": ds_sit_tot_turno,  # ✅ NOVA COLUNA NORMALIZADA
         "votos": df[vote_col],
     }
 

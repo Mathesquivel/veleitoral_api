@@ -35,6 +35,7 @@ class VotoTotal(BaseModel):
     nm_candidato: Optional[str]
     sg_partido: Optional[str]
     total_votos: int
+    ds_sit_tot_turno: Optional[str] = None  # NOVO CAMPO
 
 
 class VotoZona(BaseModel):
@@ -348,11 +349,13 @@ def votos_totais(
     nr_secao: Optional[str] = None,
     nr_candidato: Optional[str] = None,
     sg_partido: Optional[str] = None,
+    tp_voto: Optional[str] = None,  # NOVO FILTRO OPCIONAL, SE QUISER
     limite: int = Query(default=50, ge=1, le=1000),
 ):
     """
     Totais de votos agregados com filtros opcionais.
     Quando cd_municipio e cd_cargo forem enviados, eles são aplicados no WHERE.
+    Retorna também o campo ds_sit_tot_turno (status eleitoral no turno).
     """
     conn = get_conn()
     cur = conn.cursor()
@@ -368,6 +371,7 @@ def votos_totais(
             nr_candidato,
             COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
             sg_partido,
+            ds_sit_tot_turno,
             SUM(votos) AS total_votos
         FROM votos
         WHERE 1=1
@@ -401,13 +405,16 @@ def votos_totais(
     if sg_partido:
         sql += " AND sg_partido = ?"
         params.append(sg_partido)
+    if tp_voto:
+        sql += " AND tp_voto = ?"
+        params.append(tp_voto)
 
     sql += """
         GROUP BY ano, uf,
                  cd_municipio, nm_municipio,
                  cd_cargo, ds_cargo,
                  nr_candidato, nm_candidato,
-                 sg_partido
+                 sg_partido, ds_sit_tot_turno
         ORDER BY total_votos DESC
         LIMIT ?
     """
