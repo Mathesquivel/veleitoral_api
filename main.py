@@ -14,71 +14,71 @@ from ingestor import ingest_all, DB_PATH
 
 app = FastAPI(title="API TSE - VELEITORAL")
 
-# pasta do volume do Railway para CSVs (TODOS os CSV ficam aqui agora)
+# pasta do volume do Railway para CSVs
 UPLOAD_DIR = "/app/dados_tse_volume"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 BASE_DIR = Path(__file__).parent
 
 # =============================
-# MODELOS DE RESPOSTA
+# MODELOS DE RESPOSTA (CORRIGIDOS)
 # =============================
 
 class VotoTotal(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    nm_candidato: str
-    sg_partido: str
+    ano: Optional[str] = None
+    uf: Optional[str] = None
+    nm_candidato: Optional[str] = None
+    sg_partido: Optional[str] = None
     total_votos: int
 
 
 class VotoZona(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    nm_candidato: str
-    sg_partido: str
-    nr_zona: Optional[str]
-    nr_secao: Optional[str]
+    ano: Optional[str] = None
+    uf: Optional[str] = None
+    nm_candidato: Optional[str] = None
+    sg_partido: Optional[str] = None
+    nr_zona: Optional[str] = None
+    nr_secao: Optional[str] = None
     votos: int
 
 
 class VotoMunicipio(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    cd_municipio: Optional[str]
-    nm_municipio: Optional[str]
-    nm_candidato: str
-    sg_partido: str
+    ano: Optional[str] = None
+    uf: Optional[str] = None
+    cd_municipio: Optional[str] = None
+    nm_municipio: Optional[str] = None
+    nm_candidato: Optional[str] = None
+    sg_partido: Optional[str] = None
     votos: int
 
 
 class VotoCargo(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    cd_cargo: Optional[str]
-    ds_cargo: Optional[str]
-    nm_candidato: str
-    sg_partido: str
+    ano: Optional[str] = None
+    uf: Optional[str] = None
+    cd_cargo: Optional[str] = None
+    ds_cargo: Optional[str] = None
+    nm_candidato: Optional[str] = None
+    sg_partido: Optional[str] = None
     votos: int
 
 
 class CandidatoInfo(BaseModel):
-    nm_candidato: str
-    sg_partido: str
+    nm_candidato: Optional[str] = None
+    sg_partido: Optional[str] = None
     total_votos: int
-    ano: Optional[str]
-    uf: Optional[str]
+    ano: Optional[str] = None
+    uf: Optional[str] = None
 
 
 class PartidoInfo(BaseModel):
-    sg_partido: str
+    sg_partido: Optional[str] = None
     total_votos: int
-    anos: Optional[str]
-    ufs: Optional[str]
+    anos: Optional[str] = None
+    ufs: Optional[str] = None
 
 
 class RankingPartido(BaseModel):
-    sg_partido: str
+    sg_partido: Optional[str] = None
     total_votos: int
 
 
@@ -99,10 +99,6 @@ def get_conn():
 
 
 def contar_registros() -> int:
-    """
-    Conta registros na tabela 'votos'.
-    Se a tabela ainda não existir, retorna 0 ao invés de estourar erro.
-    """
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -110,14 +106,13 @@ def contar_registros() -> int:
         row = cur.fetchone()
         return row["c"] if row else 0
     except sqlite3.OperationalError:
-        # tabela 'votos' ainda não existe
         return 0
     finally:
         conn.close()
 
 
 # =============================
-# EVENTO DE STARTUP
+# STARTUP
 # =============================
 
 @app.on_event("startup")
@@ -144,10 +139,6 @@ def root():
 
 @app.post("/reload")
 def reload_dados():
-    """
-    Reprocessa todos os CSV disponíveis (no volume /app/dados_tse_volume)
-    e recria a tabela 'votos'.
-    """
     total = ingest_all(clear_table=True)
     return {
         "status": "ok",
@@ -157,15 +148,11 @@ def reload_dados():
 
 
 # =============================
-# ENDPOINT /clear-volume  (NOVO)
+# CLEAR VOLUME
 # =============================
 
 @app.post("/clear-volume")
 def clear_volume():
-    """
-    Remove TODOS os arquivos do volume /app/dados_tse_volume.
-    Libera espaço quando o volume fica cheio.
-    """
     dir_path = Path(UPLOAD_DIR)
     arquivos = list(dir_path.glob("*"))
     removidos = 0
@@ -184,22 +171,13 @@ def clear_volume():
 
 
 # =============================
-# ENDPOINTS DE UPLOAD
+# UPLOAD CSV / ZIP
 # =============================
 
-CHUNK_SIZE = 1024 * 1024  # 1MB por chunk
-
+CHUNK_SIZE = 1024 * 1024
 
 @app.post("/upload")
 async def upload_csv(file: UploadFile = File(...)):
-    """
-    Recebe um arquivo CSV de qualquer tamanho e salva no volume (/app/dados_tse_volume).
-
-    Implementação em streaming:
-    - Lê o arquivo em blocos (chunks) de 1MB
-    - Vai gravando direto no disco
-    """
-
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Envie apenas arquivos .csv")
 
@@ -214,46 +192,27 @@ async def upload_csv(file: UploadFile = File(...)):
                     break
                 tamanho_bytes += len(chunk)
                 f.write(chunk)
-
     except Exception as e:
         if destino.exists():
             destino.unlink()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao salvar arquivo no volume: {e}",
-        )
-
-    tamanho_mb = tamanho_bytes / (1024 * 1024)
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar arquivo: {e}")
 
     return {
         "status": "ok",
-        "mensagem": (
-            f"Arquivo {file.filename} (≈ {tamanho_mb:.2f} MB) salvo em {destino}. "
-            "Agora você pode chamar /reload para processar junto com os demais CSV."
-        ),
         "arquivo": file.filename,
         "caminho": str(destino),
-        "tamanho_mb": round(tamanho_mb, 2),
+        "tamanho_mb": round(tamanho_bytes / (1024 * 1024), 2),
     }
 
 
 @app.post("/upload-zip")
 async def upload_zip(file: UploadFile = File(...)):
-    """
-    Recebe um .zip contendo vários arquivos .csv e extrai todos
-    para o volume (/app/dados_tse_volume).
-    """
-
     if not file.filename.lower().endswith(".zip"):
-        raise HTTPException(
-            status_code=400,
-            detail="Envie um arquivo .zip contendo os CSV.",
-        )
+        raise HTTPException(status_code=400, detail="Envie arquivo .zip")
 
     zip_path = Path(UPLOAD_DIR) / file.filename
     tamanho_bytes = 0
 
-    # Salva o zip em disco em streaming
     try:
         with open(zip_path, "wb") as f:
             while True:
@@ -265,82 +224,43 @@ async def upload_zip(file: UploadFile = File(...)):
     except Exception as e:
         if zip_path.exists():
             zip_path.unlink()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao salvar arquivo .zip no volume: {e}",
-        )
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar arquivo .zip: {e}")
 
-    tamanho_mb = tamanho_bytes / (1024 * 1024)
-
-    # Extrai os CSV de dentro do zip
-    extraidos: List[str] = []
+    extraidos = []
     try:
         with zipfile.ZipFile(zip_path, "r") as z:
             for member in z.namelist():
-                # só queremos arquivos .csv
                 if not member.lower().endswith(".csv"):
                     continue
-
-                # evita path traversal: usa só o nome do arquivo
                 nome_arquivo = Path(member).name
                 destino_csv = Path(UPLOAD_DIR) / nome_arquivo
-
-                # extrai "na mão" para permitir overwrite e evitar paths estranhos
                 with z.open(member) as src, open(destino_csv, "wb") as dst:
                     shutil.copyfileobj(src, dst)
-
                 extraidos.append(str(destino_csv))
-
-    except zipfile.BadZipFile:
-        zip_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=400,
-            detail="Arquivo .zip inválido ou corrompido.",
-        )
-    except Exception as e:
-        zip_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao extrair arquivos do .zip: {e}",
-        )
     finally:
-        # remove o zip após extrair, para economizar espaço no volume
         zip_path.unlink(missing_ok=True)
 
     return {
         "status": "ok",
-        "mensagem": (
-            f"Arquivo {file.filename} (≈ {tamanho_mb:.2f} MB) enviado e "
-            f"{len(extraidos)} arquivo(s) .csv extraído(s) para {UPLOAD_DIR}. "
-            "Agora você pode chamar /reload para processar todos os CSV."
-        ),
-        "arquivo_zip": file.filename,
-        "tamanho_zip_mb": round(tamanho_mb, 2),
-        "total_csv_extraidos": len(extraidos),
         "arquivos_csv": extraidos,
+        "total_csv_extraidos": len(extraidos),
     }
 
 
 # =============================
-# ENDPOINTS DE CONSULTA
+# CONSULTAS
 # =============================
 
 @app.get("/votos/totais", response_model=List[VotoTotal])
-def votos_totais(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    limite: int = Query(default=50, ge=1, le=1000),
-):
+def votos_totais(ano: Optional[str] = None, uf: Optional[str] = None, limite: int = 50):
     conn = get_conn()
     cur = conn.cursor()
 
     sql = """
-        SELECT ano, uf, nm_candidato, sg_partido,
-               SUM(votos) AS total_votos
-        FROM votos
-        WHERE 1=1
+        SELECT ano, uf, nm_candidato, sg_partido, SUM(votos) AS total_votos
+        FROM votos WHERE 1=1
     """
-    params: list = []
+    params = []
 
     if ano:
         sql += " AND ano = ?"
@@ -351,8 +271,7 @@ def votos_totais(
 
     sql += """
         GROUP BY ano, uf, nm_candidato, sg_partido
-        ORDER BY total_votos DESC
-        LIMIT ?
+        ORDER BY total_votos DESC LIMIT ?
     """
     params.append(limite)
 
@@ -363,22 +282,16 @@ def votos_totais(
 
 
 @app.get("/votos/zona", response_model=List[VotoZona])
-def votos_por_zona(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    zona: Optional[str] = None,
-    limite: int = Query(default=100, ge=1, le=5000),
-):
+def votos_zona(ano: Optional[str] = None, uf: Optional[str] = None, zona: Optional[str] = None, limite: int = 100):
     conn = get_conn()
     cur = conn.cursor()
 
     sql = """
         SELECT ano, uf, nm_candidato, sg_partido,
                nr_zona, nr_secao, SUM(votos) AS votos
-        FROM votos
-        WHERE 1=1
+        FROM votos WHERE 1=1
     """
-    params: list = []
+    params = []
 
     if ano:
         sql += " AND ano = ?"
@@ -392,8 +305,7 @@ def votos_por_zona(
 
     sql += """
         GROUP BY ano, uf, nm_candidato, sg_partido, nr_zona, nr_secao
-        ORDER BY votos DESC
-        LIMIT ?
+        ORDER BY votos DESC LIMIT ?
     """
     params.append(limite)
 
@@ -404,21 +316,16 @@ def votos_por_zona(
 
 
 @app.get("/votos/municipio", response_model=List[VotoMunicipio])
-def votos_por_municipio(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    limite: int = Query(default=100, ge=1, le=5000),
-):
+def votos_municipio(ano: Optional[str] = None, uf: Optional[str] = None, limite: int = 100):
     conn = get_conn()
     cur = conn.cursor()
 
     sql = """
         SELECT ano, uf, cd_municipio, nm_municipio,
                nm_candidato, sg_partido, SUM(votos) AS votos
-        FROM votos
-        WHERE 1=1
+        FROM votos WHERE 1=1
     """
-    params: list = []
+    params = []
 
     if ano:
         sql += " AND ano = ?"
@@ -429,8 +336,7 @@ def votos_por_municipio(
 
     sql += """
         GROUP BY ano, uf, cd_municipio, nm_municipio, nm_candidato, sg_partido
-        ORDER BY votos DESC
-        LIMIT ?
+        ORDER BY votos DESC LIMIT ?
     """
     params.append(limite)
 
@@ -441,22 +347,16 @@ def votos_por_municipio(
 
 
 @app.get("/votos/cargo", response_model=List[VotoCargo])
-def votos_por_cargo(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    cd_cargo: Optional[str] = None,
-    limite: int = Query(default=100, ge=1, le=5000),
-):
+def votos_cargo(ano: Optional[str] = None, uf: Optional[str] = None, cd_cargo: Optional[str] = None, limite: int = 100):
     conn = get_conn()
     cur = conn.cursor()
 
     sql = """
         SELECT ano, uf, cd_cargo, ds_cargo,
                nm_candidato, sg_partido, SUM(votos) AS votos
-        FROM votos
-        WHERE 1=1
+        FROM votos WHERE 1=1
     """
-    params: list = []
+    params = []
 
     if ano:
         sql += " AND ano = ?"
@@ -470,8 +370,7 @@ def votos_por_cargo(
 
     sql += """
         GROUP BY ano, uf, cd_cargo, ds_cargo, nm_candidato, sg_partido
-        ORDER BY votos DESC
-        LIMIT ?
+        ORDER BY votos DESC LIMIT ?
     """
     params.append(limite)
 
@@ -482,21 +381,16 @@ def votos_por_cargo(
 
 
 @app.get("/candidatos", response_model=List[CandidatoInfo])
-def listar_candidatos(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    limite: int = Query(default=100, ge=1, le=5000),
-):
+def candidatos(ano: Optional[str] = None, uf: Optional[str] = None, limite: int = 100):
     conn = get_conn()
     cur = conn.cursor()
 
     sql = """
         SELECT nm_candidato, sg_partido, ano, uf,
                SUM(votos) AS total_votos
-        FROM votos
-        WHERE 1=1
+        FROM votos WHERE 1=1
     """
-    params: list = []
+    params = []
 
     if ano:
         sql += " AND ano = ?"
@@ -507,8 +401,7 @@ def listar_candidatos(
 
     sql += """
         GROUP BY nm_candidato, sg_partido, ano, uf
-        ORDER BY total_votos DESC
-        LIMIT ?
+        ORDER BY total_votos DESC LIMIT ?
     """
     params.append(limite)
 
@@ -519,10 +412,7 @@ def listar_candidatos(
 
 
 @app.get("/partidos", response_model=List[PartidoInfo])
-def listar_partidos(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-):
+def partidos(ano: Optional[str] = None, uf: Optional[str] = None):
     conn = get_conn()
     cur = conn.cursor()
 
@@ -531,10 +421,9 @@ def listar_partidos(
                SUM(votos) AS total_votos,
                GROUP_CONCAT(DISTINCT ano) AS anos,
                GROUP_CONCAT(DISTINCT uf) AS ufs
-        FROM votos
-        WHERE 1=1
+        FROM votos WHERE 1=1
     """
-    params: list = []
+    params = []
 
     if ano:
         sql += " AND ano = ?"
@@ -555,21 +444,16 @@ def listar_partidos(
 
 
 @app.get("/ranking/partido", response_model=List[RankingPartido])
-def ranking_partidos(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    limite: int = Query(default=50, ge=1, le=1000),
-):
+def ranking_partido(ano: Optional[str] = None, uf: Optional[str] = None, limite: int = 50):
     conn = get_conn()
     cur = conn.cursor()
 
     sql = """
         SELECT sg_partido,
                SUM(votos) AS total_votos
-        FROM votos
-        WHERE 1=1
+        FROM votos WHERE 1=1
     """
-    params: list = []
+    params = []
 
     if ano:
         sql += " AND ano = ?"
@@ -580,8 +464,7 @@ def ranking_partidos(
 
     sql += """
         GROUP BY sg_partido
-        ORDER BY total_votos DESC
-        LIMIT ?
+        ORDER BY total_votos DESC LIMIT ?
     """
     params.append(limite)
 
@@ -599,7 +482,7 @@ def estatisticas():
     try:
         cur.execute("SELECT COUNT(*) AS c FROM votos")
         total = cur.fetchone()["c"]
-    except sqlite3.OperationalError:
+    except:
         total = 0
 
     cur.execute("SELECT DISTINCT ano FROM votos WHERE ano IS NOT NULL")

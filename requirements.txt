@@ -1,12 +1,17 @@
-fastapi==0.115.5
-uvicorn[standard]==0.32.1
+fastapi
+uvicorn[standard]
 
-pydantic==2.9.2
+pydantic
 
-pandas==2.3.3
-numpy==2.3.5
-python-dateutil==2.9.0.post0
-pytz==2025.2
-tzdata==2025.2
+pandas
+numpy
+python-dateutil
+pytz
+tzdata
 
-python-multipart==0.0.9
+python-multipart
+
+basedosdados
+google-cloud-bigquery
+db-dtypes
+pyarrow
