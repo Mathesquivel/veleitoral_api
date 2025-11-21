@@ -1,10 +1,11 @@
-# main.py — API VELEITORAL (versão final, completa e otimizada)
+# main.py
+# API FastAPI da V-Eleitoral, lendo dados do bd SQLite alimentado pelos CSV do TSE.
 
 from fastapi import FastAPI, Query, UploadFile, File, HTTPException
 from pydantic import BaseModel
-import sqlite3
 from typing import Optional, List
 from pathlib import Path
+import sqlite3
 import os
 import zipfile
 import shutil
@@ -13,22 +14,15 @@ from ingestor import ingest_all, DB_PATH
 
 app = FastAPI(title="API TSE - VELEITORAL")
 
+# pasta do volume do Railway para CSVs (TODOS os CSV ficam aqui agora)
 UPLOAD_DIR = "/app/dados_tse_volume"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+BASE_DIR = Path(__file__).parent
 
-# ======================================================
+# =============================
 # MODELOS DE RESPOSTA
-# ======================================================
-
-class Estatisticas(BaseModel):
-    total_registros: int
-    total_votos: int
-    total_candidatos: int
-    total_partidos: int
-    anos_disponiveis: List[str]
-    ufs_disponiveis: List[str]
-
+# =============================
 
 class VotoTotal(BaseModel):
     ano: Optional[str]
@@ -71,9 +65,39 @@ class VotoCargo(BaseModel):
     votos: int
 
 
-# ======================================================
+class CandidatoInfo(BaseModel):
+    nm_candidato: Optional[str]
+    sg_partido: Optional[str]
+    nr_candidato: Optional[str]
+    ano: Optional[str]
+    uf: Optional[str]
+    total_votos: int
+
+
+class PartidoInfo(BaseModel):
+    sg_partido: Optional[str]
+    total_votos: int
+    anos: List[str]
+    ufs: List[str]
+
+
+class RankingPartido(BaseModel):
+    sg_partido: Optional[str]
+    total_votos: int
+
+
+class Estatisticas(BaseModel):
+    total_registros: int
+    total_votos: int
+    total_candidatos: int
+    total_partidos: int
+    anos_disponiveis: List[str]
+    ufs_disponiveis: List[str]
+
+
+# =============================
 # FUNÇÕES DE BANCO
-# ======================================================
+# =============================
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -81,105 +105,251 @@ def get_conn():
     return conn
 
 
-# ======================================================
-# STARTUP — INGESTÃO AUTOMÁTICA SEM DUPLICAR
-# ======================================================
+def contar_registros() -> int:
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COUNT(*) AS c FROM votos")
+        row = cur.fetchone()
+        return row["c"] if row else 0
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        conn.close()
+
+
+def criar_indices():
+    """Cria índices básicos para acelerar as consultas mais usadas."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_votos_ano_uf_partido "
+            "ON votos(ano, uf, sg_partido)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_votos_candidato "
+            "ON votos(nm_candidato)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_votos_cargo "
+            "ON votos(cd_cargo, ds_cargo)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# =============================
+# EVENTO DE STARTUP
+# =============================
 
 @app.on_event("startup")
 def startup_event():
-    print("🚀 Iniciando ingestão...")
-    ingest_all(clear_table=True)    # <----- IMPORTANTE: NÃO REMOVE!
-    print("🚀 Ingestão concluída.")
+    print("\n🚀 Iniciando ingestão...")
+    total = ingest_all(clear_table=True)
+    print(f"✅ Ingestão concluída. Registros inseridos (total): {total}")
+    print("⚙️  Criando índices na tabela 'votos'...")
+    criar_indices()
+    print("✅ Índices criados (ou já existiam).")
+    print(f"🚀 API pronta. Registros carregados: {contar_registros()}")
 
 
-# ======================================================
-# ENDPOINT RAIZ
-# ======================================================
+# =============================
+# ENDPOINTS BÁSICOS
+# =============================
 
 @app.get("/")
 def root():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) AS c FROM votos")
-    total = cur.fetchone()["c"]
+    total = contar_registros()
     return {
         "status": "ok",
+        "mensagem": "API TSE VELEITORAL rodando.",
         "registros_votos": total,
         "banco": str(DB_PATH),
     }
 
 
-# ======================================================
-# ESTATÍSTICAS COMPLETAS
-# ======================================================
-
-@app.get("/estatisticas", response_model=Estatisticas)
-def estatisticas():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # total de registros + soma de votos
-    cur.execute("""
-        SELECT COUNT(*) AS total_registros,
-               SUM(votos) AS total_votos
-        FROM votos
-    """)
-    row = cur.fetchone()
-    total_registros = row["total_registros"]
-    total_votos = row["total_votos"] or 0
-
-    # total de candidatos
-    cur.execute("SELECT COUNT(DISTINCT nm_candidato) AS c FROM votos WHERE nm_candidato IS NOT NULL")
-    total_candidatos = cur.fetchone()["c"]
-
-    # total de partidos
-    cur.execute("SELECT COUNT(DISTINCT sg_partido) AS c FROM votos WHERE sg_partido IS NOT NULL")
-    total_partidos = cur.fetchone()["c"]
-
-    # lista de anos
-    cur.execute("SELECT DISTINCT ano FROM votos WHERE ano IS NOT NULL")
-    anos = sorted([r["ano"] for r in cur.fetchall()])
-
-    # lista de UFs
-    cur.execute("SELECT DISTINCT uf FROM votos WHERE uf IS NOT NULL")
-    ufs = sorted([r["uf"] for r in cur.fetchall()])
-
-    conn.close()
-
-    return Estatisticas(
-        total_registros=total_registros,
-        total_votos=total_votos,
-        total_candidatos=total_candidatos,
-        total_partidos=total_partidos,
-        anos_disponiveis=anos,
-        ufs_disponiveis=ufs,
-    )
+@app.post("/reload")
+def reload_dados():
+    """
+    Reprocessa todos os CSV disponíveis (no volume /app/dados_tse_volume)
+    e recria a tabela 'votos'.
+    """
+    total = ingest_all(clear_table=True)
+    criar_indices()
+    return {
+        "status": "ok",
+        "mensagem": "Recarregado com sucesso.",
+        "registros_votos": total,
+    }
 
 
-# ======================================================
-# RANKING DE CANDIDATOS
-# ======================================================
+@app.post("/clear-volume")
+def clear_volume():
+    """
+    Remove TODOS os arquivos do volume /app/dados_tse_volume.
+    """
+    dir_path = Path(UPLOAD_DIR)
+    arquivos = list(dir_path.glob("*"))
+    removidos = 0
+
+    for arq in arquivos:
+        try:
+            arq.unlink()
+            removidos += 1
+        except Exception as e:
+            print(f"⚠ Erro ao remover {arq}: {e}")
+
+    return {
+        "status": "ok",
+        "mensagem": f"{removidos} arquivo(s) removido(s) do volume.",
+    }
+
+
+# =============================
+# ENDPOINTS DE UPLOAD
+# =============================
+
+CHUNK_SIZE = 1024 * 1024  # 1 MB
+
+
+@app.post("/upload")
+async def upload_csv(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Envie apenas arquivos .csv")
+
+    destino = Path(UPLOAD_DIR) / file.filename
+    tamanho_bytes = 0
+
+    try:
+        with open(destino, "wb") as f:
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                tamanho_bytes += len(chunk)
+                f.write(chunk)
+    except Exception as e:
+        if destino.exists():
+            destino.unlink()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao salvar arquivo no volume: {e}",
+        )
+
+    tamanho_mb = tamanho_bytes / (1024 * 1024)
+    return {
+        "status": "ok",
+        "mensagem": (
+            f"Arquivo {file.filename} (≈ {tamanho_mb:.2f} MB) salvo em {destino}. "
+            "Agora você pode chamar /reload para processar junto com os demais CSV."
+        ),
+        "arquivo": file.filename,
+        "caminho": str(destino),
+        "tamanho_mb": round(tamanho_mb, 2),
+    }
+
+
+@app.post("/upload-zip")
+async def upload_zip(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".zip"):
+        raise HTTPException(
+            status_code=400,
+            detail="Envie um arquivo .zip contendo os CSV.",
+        )
+
+    zip_path = Path(UPLOAD_DIR) / file.filename
+    tamanho_bytes = 0
+
+    try:
+        with open(zip_path, "wb") as f:
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                tamanho_bytes += len(chunk)
+                f.write(chunk)
+    except Exception as e:
+        if zip_path.exists():
+            zip_path.unlink()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao salvar arquivo .zip no volume: {e}",
+        )
+
+    tamanho_mb = tamanho_bytes / (1024 * 1024)
+
+    extraidos: List[str] = []
+    try:
+        with zipfile.ZipFile(zip_path, "r") as z:
+            for member in z.namelist():
+                if not member.lower().endswith(".csv"):
+                    continue
+
+                nome_arquivo = Path(member).name
+                destino_csv = Path(UPLOAD_DIR) / nome_arquivo
+
+                with z.open(member) as src, open(destino_csv, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+
+                extraidos.append(str(destino_csv))
+    except zipfile.BadZipFile:
+        zip_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Arquivo .zip inválido ou corrompido.",
+        )
+    except Exception as e:
+        zip_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao extrair arquivos do .zip: {e}",
+        )
+    finally:
+        zip_path.unlink(missing_ok=True)
+
+    return {
+        "status": "ok",
+        "mensagem": (
+            f"Arquivo {file.filename} (≈ {tamanho_mb:.2f} MB) enviado e "
+            f"{len(extraidos)} arquivo(s) .csv extraído(s) para {UPLOAD_DIR}. "
+            "Agora você pode chamar /reload para processar todos os CSV."
+        ),
+        "arquivo_zip": file.filename,
+        "tamanho_zip_mb": round(tamanho_mb, 2),
+        "total_csv_extraidos": len(extraidos),
+        "arquivos_csv": extraidos,
+    }
+
+
+# =============================
+# ENDPOINTS DE CONSULTA
+# =============================
 
 @app.get("/votos/totais", response_model=List[VotoTotal])
 def votos_totais(
     ano: Optional[str] = None,
     uf: Optional[str] = None,
-    limite: int = 50
+    limite: int = Query(default=50, ge=1, le=1000),
 ):
     conn = get_conn()
     cur = conn.cursor()
 
     sql = """
-        SELECT ano, uf,
-               nr_candidato,
-               nm_candidato,
-               sg_partido,
-               ds_cargo,
-               SUM(votos) AS total_votos
+        SELECT
+            ano,
+            uf,
+            nr_candidato,
+            nm_candidato,
+            sg_partido,
+            ds_cargo,
+            SUM(votos) AS total_votos,
+            NULL AS nm_municipio
         FROM votos
-        WHERE nm_candidato IS NOT NULL
+        WHERE 1=1
     """
-    params = []
+    params: List = []
 
     if ano:
         sql += " AND ano = ?"
@@ -198,38 +368,32 @@ def votos_totais(
     cur.execute(sql, params)
     rows = cur.fetchall()
     conn.close()
+    return [VotoTotal(**dict(r)) for r in rows]
 
-    resultado = []
-    for r in rows:
-        d = dict(r)
-        d["nm_municipio"] = None
-        resultado.append(VotoTotal(**d))
-
-    return resultado
-
-
-# ======================================================
-# VOTOS POR ZONA / SEÇÃO
-# ======================================================
 
 @app.get("/votos/zona", response_model=List[VotoZona])
 def votos_por_zona(
     ano: Optional[str] = None,
     uf: Optional[str] = None,
     zona: Optional[str] = None,
-    limite: int = 100
+    limite: int = Query(default=100, ge=1, le=5000),
 ):
     conn = get_conn()
     cur = conn.cursor()
 
     sql = """
-        SELECT ano, uf, nm_candidato, sg_partido,
-               nr_zona, nr_secao,
-               SUM(votos) AS votos
+        SELECT
+            ano,
+            uf,
+            nm_candidato,
+            sg_partido,
+            nr_zona,
+            nr_secao,
+            SUM(votos) AS votos
         FROM votos
         WHERE 1=1
     """
-    params = []
+    params: List = []
 
     if ano:
         sql += " AND ano = ?"
@@ -254,30 +418,28 @@ def votos_por_zona(
     return [VotoZona(**dict(r)) for r in rows]
 
 
-# ======================================================
-# VOTOS POR MUNICÍPIO
-# ======================================================
-
 @app.get("/votos/municipio", response_model=List[VotoMunicipio])
 def votos_por_municipio(
     ano: Optional[str] = None,
     uf: Optional[str] = None,
-    limite: int = 200
+    limite: int = Query(default=100, ge=1, le=5000),
 ):
     conn = get_conn()
     cur = conn.cursor()
 
     sql = """
-        SELECT ano, uf,
-               cd_municipio,
-               nm_municipio,
-               nm_candidato,
-               sg_partido,
-               SUM(votos) AS votos
+        SELECT
+            ano,
+            uf,
+            cd_municipio,
+            nm_municipio,
+            nm_candidato,
+            sg_partido,
+            SUM(votos) AS votos
         FROM votos
-        WHERE nm_candidato IS NOT NULL
+        WHERE 1=1
     """
-    params = []
+    params: List = []
 
     if ano:
         sql += " AND ano = ?"
@@ -299,30 +461,29 @@ def votos_por_municipio(
     return [VotoMunicipio(**dict(r)) for r in rows]
 
 
-# ======================================================
-# VOTOS POR CARGO
-# ======================================================
-
 @app.get("/votos/cargo", response_model=List[VotoCargo])
 def votos_por_cargo(
     ano: Optional[str] = None,
     uf: Optional[str] = None,
     cd_cargo: Optional[str] = None,
-    limite: int = 100
+    limite: int = Query(default=100, ge=1, le=5000),
 ):
     conn = get_conn()
     cur = conn.cursor()
 
     sql = """
-        SELECT ano, uf,
-               cd_cargo, ds_cargo,
-               nm_candidato,
-               sg_partido,
-               SUM(votos) AS votos
+        SELECT
+            ano,
+            uf,
+            cd_cargo,
+            ds_cargo,
+            nm_candidato,
+            sg_partido,
+            SUM(votos) AS votos
         FROM votos
-        WHERE nm_candidato IS NOT NULL
+        WHERE 1=1
     """
-    params = []
+    params: List = []
 
     if ano:
         sql += " AND ano = ?"
@@ -347,38 +508,192 @@ def votos_por_cargo(
     return [VotoCargo(**dict(r)) for r in rows]
 
 
-# ======================================================
-# UPLOAD CSV / ZIP
-# ======================================================
+@app.get("/candidatos", response_model=List[CandidatoInfo])
+def listar_candidatos(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    limite: int = Query(default=100, ge=1, le=5000),
+):
+    conn = get_conn()
+    cur = conn.cursor()
 
-@app.post("/upload")
-async def upload(file: UploadFile = File(...)):
-    dest = Path(UPLOAD_DIR) / file.filename
-    with open(dest, "wb") as f:
-        f.write(await file.read())
-    return {"status": "ok", "arquivo": file.filename}
+    sql = """
+        SELECT
+            nm_candidato,
+            sg_partido,
+            nr_candidato,
+            ano,
+            uf,
+            SUM(votos) AS total_votos
+        FROM votos
+        WHERE 1=1
+    """
+    params: List = []
+
+    if ano:
+        sql += " AND ano = ?"
+        params.append(ano)
+    if uf:
+        sql += " AND uf = ?"
+        params.append(uf)
+
+    sql += """
+        GROUP BY nm_candidato, sg_partido, nr_candidato, ano, uf
+        ORDER BY total_votos DESC
+        LIMIT ?
+    """
+    params.append(limite)
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+    return [CandidatoInfo(**dict(r)) for r in rows]
 
 
-@app.post("/upload-zip")
-async def upload_zip(file: UploadFile = File(...)):
-    zip_path = Path(UPLOAD_DIR) / file.filename
-    with open(zip_path, "wb") as f:
-        f.write(await file.read())
+# <-- ENDPOINT QUE O LOVABLE ESTÁ ESPERANDO
+@app.get("/partidos", response_model=List[PartidoInfo])
+def listar_partidos(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    limite: int = Query(default=100, ge=1, le=1000),
+):
+    """
+    Lista partidos com total de votos, e anos/UFs em que aparecem.
+    Usado pelo Lovable para:
+      - preencher dropdown de partido
+      - ranking de partidos
+    """
+    conn = get_conn()
+    cur = conn.cursor()
 
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(UPLOAD_DIR)
+    sql = """
+        SELECT
+            sg_partido,
+            SUM(votos) AS total_votos,
+            GROUP_CONCAT(DISTINCT ano) AS anos_csv,
+            GROUP_CONCAT(DISTINCT uf) AS ufs_csv
+        FROM votos
+        WHERE 1=1
+    """
+    params: List = []
 
-    return {"status": "ok", "mensagem": "ZIP extraído"}
+    if ano:
+        sql += " AND ano = ?"
+        params.append(ano)
+    if uf:
+        sql += " AND uf = ?"
+        params.append(uf)
+
+    sql += """
+        GROUP BY sg_partido
+        ORDER BY total_votos DESC
+        LIMIT ?
+    """
+    params.append(limite)
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    result: List[PartidoInfo] = []
+    for r in rows:
+        d = dict(r)
+        anos_csv = d.get("anos_csv") or ""
+        ufs_csv = d.get("ufs_csv") or ""
+        anos_list = [a for a in anos_csv.split(",") if a] if anos_csv else []
+        ufs_list = [u for u in ufs_csv.split(",") if u] if ufs_csv else []
+        result.append(
+            PartidoInfo(
+                sg_partido=d.get("sg_partido"),
+                total_votos=int(d.get("total_votos") or 0),
+                anos=anos_list,
+                ufs=ufs_list,
+            )
+        )
+    return result
 
 
-# ======================================================
-# LIMPAR VOLUME
-# ======================================================
+@app.get("/ranking/partidos", response_model=List[RankingPartido])
+def ranking_partidos(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    limite: int = Query(default=50, ge=1, le=1000),
+):
+    conn = get_conn()
+    cur = conn.cursor()
 
-@app.post("/clear-volume")
-def clear_volume():
-    count = 0
-    for f in Path(UPLOAD_DIR).glob("*"):
-        f.unlink()
-        count += 1
-    return {"status": "ok", "removidos": count}
+    sql = """
+        SELECT
+            sg_partido,
+            SUM(votos) AS total_votos
+        FROM votos
+        WHERE 1=1
+    """
+    params: List = []
+
+    if ano:
+        sql += " AND ano = ?"
+        params.append(ano)
+    if uf:
+        sql += " AND uf = ?"
+        params.append(uf)
+
+    sql += """
+        GROUP BY sg_partido
+        ORDER BY total_votos DESC
+        LIMIT ?
+    """
+    params.append(limite)
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+    return [RankingPartido(**dict(r)) for r in rows]
+
+
+@app.get("/estatisticas", response_model=Estatisticas)
+def estatisticas():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("SELECT COUNT(*) AS c, SUM(votos) AS t FROM votos")
+        row = cur.fetchone()
+        total_registros = row["c"] or 0
+        total_votos = row["t"] or 0
+    except sqlite3.OperationalError:
+        total_registros = 0
+        total_votos = 0
+
+    # total de candidatos distintos
+    try:
+        cur.execute("SELECT COUNT(DISTINCT nm_candidato) AS c FROM votos")
+        row = cur.fetchone()
+        total_candidatos = row["c"] or 0
+    except sqlite3.OperationalError:
+        total_candidatos = 0
+
+    # total de partidos distintos
+    try:
+        cur.execute("SELECT COUNT(DISTINCT sg_partido) AS c FROM votos")
+        row = cur.fetchone()
+        total_partidos = row["c"] or 0
+    except sqlite3.OperationalError:
+        total_partidos = 0
+
+    cur.execute("SELECT DISTINCT ano FROM votos WHERE ano IS NOT NULL")
+    anos = sorted({r["ano"] for r in cur.fetchall() if r["ano"]})
+
+    cur.execute("SELECT DISTINCT uf FROM votos WHERE uf IS NOT NULL")
+    ufs = sorted({r["uf"] for r in cur.fetchall() if r["uf"]})
+
+    conn.close()
+
+    return Estatisticas(
+        total_registros=int(total_registros),
+        total_votos=int(total_votos),
+        total_candidatos=int(total_candidatos),
+        total_partidos=int(total_partidos),
+        anos_disponiveis=anos,
+        ufs_disponiveis=ufs,
+    )
