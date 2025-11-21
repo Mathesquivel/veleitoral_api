@@ -21,7 +21,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 BASE_DIR = Path(__file__).parent
 
 # =============================
-# MODELOS DE RESPOSTA (CORRIGIDOS)
+# MODELOS DE RESPOSTA
 # =============================
 
 class VotoTotal(BaseModel):
@@ -248,11 +248,18 @@ async def upload_zip(file: UploadFile = File(...)):
 
 
 # =============================
-# CONSULTAS
+# CONSULTAS (COM ANO PADRÃO 2024)
 # =============================
 
 @app.get("/votos/totais", response_model=List[VotoTotal])
-def votos_totais(ano: Optional[str] = None, uf: Optional[str] = None, limite: int = 50):
+def votos_totais(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    limite: int = Query(default=50, ge=1, le=1000),
+):
+    # ano padrão para não buscar o Brasil inteiro
+    ano_filtro = ano or "2024"
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -262,9 +269,9 @@ def votos_totais(ano: Optional[str] = None, uf: Optional[str] = None, limite: in
     """
     params = []
 
-    if ano:
+    if ano_filtro:
         sql += " AND ano = ?"
-        params.append(ano)
+        params.append(ano_filtro)
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -282,7 +289,14 @@ def votos_totais(ano: Optional[str] = None, uf: Optional[str] = None, limite: in
 
 
 @app.get("/votos/zona", response_model=List[VotoZona])
-def votos_zona(ano: Optional[str] = None, uf: Optional[str] = None, zona: Optional[str] = None, limite: int = 100):
+def votos_zona(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    zona: Optional[str] = None,
+    limite: int = Query(default=100, ge=1, le=5000),
+):
+    ano_filtro = ano or "2024"
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -293,9 +307,9 @@ def votos_zona(ano: Optional[str] = None, uf: Optional[str] = None, zona: Option
     """
     params = []
 
-    if ano:
+    if ano_filtro:
         sql += " AND ano = ?"
-        params.append(ano)
+        params.append(ano_filtro)
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -316,7 +330,13 @@ def votos_zona(ano: Optional[str] = None, uf: Optional[str] = None, zona: Option
 
 
 @app.get("/votos/municipio", response_model=List[VotoMunicipio])
-def votos_municipio(ano: Optional[str] = None, uf: Optional[str] = None, limite: int = 100):
+def votos_municipio(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    limite: int = Query(default=100, ge=1, le=5000),
+):
+    ano_filtro = ano or "2024"
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -327,9 +347,9 @@ def votos_municipio(ano: Optional[str] = None, uf: Optional[str] = None, limite:
     """
     params = []
 
-    if ano:
+    if ano_filtro:
         sql += " AND ano = ?"
-        params.append(ano)
+        params.append(ano_filtro)
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -347,7 +367,14 @@ def votos_municipio(ano: Optional[str] = None, uf: Optional[str] = None, limite:
 
 
 @app.get("/votos/cargo", response_model=List[VotoCargo])
-def votos_cargo(ano: Optional[str] = None, uf: Optional[str] = None, cd_cargo: Optional[str] = None, limite: int = 100):
+def votos_cargo(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    cd_cargo: Optional[str] = None,
+    limite: int = Query(default=100, ge=1, le=5000),
+):
+    ano_filtro = ano or "2024"
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -358,9 +385,9 @@ def votos_cargo(ano: Optional[str] = None, uf: Optional[str] = None, cd_cargo: O
     """
     params = []
 
-    if ano:
+    if ano_filtro:
         sql += " AND ano = ?"
-        params.append(ano)
+        params.append(ano_filtro)
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -381,7 +408,13 @@ def votos_cargo(ano: Optional[str] = None, uf: Optional[str] = None, cd_cargo: O
 
 
 @app.get("/candidatos", response_model=List[CandidatoInfo])
-def candidatos(ano: Optional[str] = None, uf: Optional[str] = None, limite: int = 100):
+def candidatos(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    limite: int = Query(default=100, ge=1, le=5000),
+):
+    ano_filtro = ano or "2024"
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -392,9 +425,9 @@ def candidatos(ano: Optional[str] = None, uf: Optional[str] = None, limite: int 
     """
     params = []
 
-    if ano:
+    if ano_filtro:
         sql += " AND ano = ?"
-        params.append(ano)
+        params.append(ano_filtro)
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -412,7 +445,12 @@ def candidatos(ano: Optional[str] = None, uf: Optional[str] = None, limite: int 
 
 
 @app.get("/partidos", response_model=List[PartidoInfo])
-def partidos(ano: Optional[str] = None, uf: Optional[str] = None):
+def partidos(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+):
+    ano_filtro = ano or "2024"
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -425,9 +463,9 @@ def partidos(ano: Optional[str] = None, uf: Optional[str] = None):
     """
     params = []
 
-    if ano:
+    if ano_filtro:
         sql += " AND ano = ?"
-        params.append(ano)
+        params.append(ano_filtro)
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -444,7 +482,13 @@ def partidos(ano: Optional[str] = None, uf: Optional[str] = None):
 
 
 @app.get("/ranking/partido", response_model=List[RankingPartido])
-def ranking_partido(ano: Optional[str] = None, uf: Optional[str] = None, limite: int = 50):
+def ranking_partido(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    limite: int = Query(default=50, ge=1, le=1000),
+):
+    ano_filtro = ano or "2024"
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -455,9 +499,9 @@ def ranking_partido(ano: Optional[str] = None, uf: Optional[str] = None, limite:
     """
     params = []
 
-    if ano:
+    if ano_filtro:
         sql += " AND ano = ?"
-        params.append(ano)
+        params.append(ano_filtro)
     if uf:
         sql += " AND uf = ?"
         params.append(uf)
@@ -482,7 +526,7 @@ def estatisticas():
     try:
         cur.execute("SELECT COUNT(*) AS c FROM votos")
         total = cur.fetchone()["c"]
-    except:
+    except sqlite3.OperationalError:
         total = 0
 
     cur.execute("SELECT DISTINCT ano FROM votos WHERE ano IS NOT NULL")

@@ -196,6 +196,22 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
     return result
 
 
+def create_indexes(conn: sqlite3.Connection):
+    """
+    Cria índices na tabela 'votos' para acelerar as consultas mais comuns.
+    Rodado ao final da ingestão.
+    """
+    print("⚙️  Criando índices na tabela 'votos'...")
+    cur = conn.cursor()
+    # Índices para filtros mais usados (ano, uf, cargo, município, partido)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_ano_uf ON votos(ano, uf)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_cargo ON votos(ano, uf, cd_cargo)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_municipio ON votos(ano, uf, cd_municipio)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_partido ON votos(ano, uf, sg_partido)")
+    conn.commit()
+    print("✅ Índices criados (ou já existiam).")
+
+
 def ingest_all(clear_table: bool = True) -> int:
     """
     Lê todos os CSV no volume /app/dados_tse_volume e insere na tabela 'votos'.
@@ -231,6 +247,10 @@ def ingest_all(clear_table: bool = True) -> int:
             total += len(df_proc)
             print("   ✔ Inserido na tabela 'votos'.")
 
-    conn.close()
     print(f"✅ Ingestão concluída. Registros inseridos (total): {total}")
+
+    # ✅ Cria índices ao final para acelerar consultas
+    create_indexes(conn)
+
+    conn.close()
     return total
