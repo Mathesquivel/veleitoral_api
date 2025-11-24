@@ -21,6 +21,8 @@ ENCODING = "latin1"
 def detectar_colunas(df: pd.DataFrame):
     """
     Detecta colunas mínimas pra considerar que é um arquivo de votação de candidato/partido.
+    Usado para arquivos como:
+      - votacao_candidato_munzona_XXXX_UF.csv
     """
 
     # Coluna de votos
@@ -66,6 +68,7 @@ def extrair_ano_uf_do_arquivo(path: Path):
       - votacao_candidato_munzona_2018_SP.csv
       - votacao_candidato_munzona_2018_SP_9.csv
       - votacao_candidato_munzona_2018_PB_PARTE2.csv
+      - detalhe_votacao_secao_2022_SP.csv
     """
     nome = path.name.upper()
     ano = None
@@ -88,10 +91,12 @@ def extrair_ano_uf_do_arquivo(path: Path):
     return ano, uf
 
 
-def processar_arquivo(path: Path) -> pd.DataFrame | None:
+def ler_csv_flex(path: Path) -> pd.DataFrame | None:
+    """
+    Lê um CSV usando a configuração padrão; se der erro de parsing,
+    tenta novamente com engine='python' e on_bad_lines='skip'.
+    """
     print(f"\n📄 Lendo: {path.name}")
-
-    # 1) Tenta ler normalmente
     try:
         df = pd.read_csv(
             path,
@@ -100,8 +105,8 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
             dtype=str,
             low_memory=False,
         )
+        return df
     except pd.errors.ParserError as e:
-        # Erro de parsing (por exemplo: EOF inside string) → tenta modo mais tolerante
         print(f"   ⚠ Erro de parsing em {path.name}: {e}")
         print("   ⚠ Tentando novamente com engine='python' e ignorando linhas problemáticas (on_bad_lines='skip')...")
         try:
@@ -112,14 +117,29 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
                 dtype=str,
                 low_memory=False,
                 engine="python",
-                on_bad_lines="skip",  # pandas >= 1.3
+                on_bad_lines="skip",
             )
+            return df
         except Exception as e2:
             print(f"   ❌ Falha ao ler {path.name} mesmo com engine='python'. Arquivo será ignorado.")
             print(f"   ❌ Erro: {e2}")
             return None
     except Exception as e:
         print(f"   ❌ Erro inesperado ao ler {path.name}: {e}. Arquivo será ignorado.")
+        return None
+
+
+# ===============================================
+# PROCESSAMENTO DOS ARQUIVOS DE VOTOS (CANDIDATO)
+# ===============================================
+
+def processar_arquivo_votos(path: Path) -> pd.DataFrame | None:
+    """
+    Processa arquivos de votação por candidato/partido (munzona etc.)
+    e retorna um DataFrame no formato da tabela 'votos'.
+    """
+    df = ler_csv_flex(path)
+    if df is None:
         return None
 
     # Limpa marcadores especiais
@@ -162,10 +182,10 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
     ds_cargo = df["DS_CARGO"] if "DS_CARGO" in df.columns else None
     nr_candidato = df["NR_CANDIDATO"] if "NR_CANDIDATO" in df.columns else None
 
-    # ✅ Status total no turno (vem do CSV como DS_SIT_TOT_TURNO)
+    # Status total no turno (quando existir)
     ds_sit_tot_turno = df["DS_SIT_TOT_TURNO"] if "DS_SIT_TOT_TURNO" in df.columns else None
 
-    # 🔎 Identificação do local de votação (escola)
+    # 🔎 Identificação do local de votação (escola) - quando existir nesse arquivo
     cd_local = None
     nm_local = None
     ds_local_endereco = None
@@ -179,7 +199,6 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
         if nm_local is None and ("NM_LOCAL_VOT" in up or "DS_LOCAL_VOT" in up):
             nm_local = df[col]
 
-        # 🆕 endereço da escola / local de votação
         if ds_local_endereco is None and (
             "ENDERECO" in up and ("LOCAL_VOT" in up or "LOC_VOT" in up)
         ):
@@ -202,14 +221,73 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
         "cd_local_votacao": cd_local,
         "nm_local_votacao": nm_local,
         "ds_local_votacao_endereco": ds_local_endereco,
-        "ds_sit_tot_turno": ds_sit_tot_turno,  # ✅ NOVA COLUNA NORMALIZADA
+        "ds_sit_tot_turno": ds_sit_tot_turno,
         "votos": df[vote_col],
     }
 
     result = pd.DataFrame(base_cols)
-    print(f"   → Registros processados: {len(result)}")
+    print(f"   → Registros processados (votos): {len(result)}")
     return result
 
+
+# ========================================
+# PROCESSAMENTO DOS ARQUIVOS DE DETALHE
+# ========================================
+
+def processar_detalhe_secao(path: Path) -> pd.DataFrame | None:
+    """
+    Processa arquivos DETALHE_VOTACAO_SECAO_<ANO>_<UF>.csv
+
+    Esses arquivos NÃO possuem votos por candidato, mas têm:
+      - zona, seção
+      - local de votação (escola)
+      - endereço do local
+
+    Aqui vamos gerar registros apenas para a tabela 'locais_secao'.
+    """
+    df = ler_csv_flex(path)
+    if df is None:
+        return None
+
+    df = df.replace({"#NULO": None, "#NE": None})
+
+    # Ano e UF
+    ano, uf_arquivo = extrair_ano_uf_do_arquivo(path)
+    ano = ano or df.get("ANO_ELEICAO", pd.Series([None])).iloc[0]
+    uf = uf_arquivo or df.get("SG_UF", pd.Series([None])).iloc[0]
+
+    # Colunas conforme layout do TSE (DETALHE_VOTACAO_SECAO)
+    # :contentReference[oaicite:0]{index=0}
+    cd_municipio = df["CD_MUNICIPIO"] if "CD_MUNICIPIO" in df.columns else None
+    nm_municipio = df["NM_MUNICIPIO"] if "NM_MUNICIPIO" in df.columns else None
+    nr_zona = df["NR_ZONA"] if "NR_ZONA" in df.columns else None
+    nr_secao = df["NR_SECAO"] if "NR_SECAO" in df.columns else None
+
+    nr_local_votacao = df["NR_LOCAL_VOTACAO"] if "NR_LOCAL_VOTACAO" in df.columns else None
+    nm_local_votacao = df["NM_LOCAL_VOTACAO"] if "NM_LOCAL_VOTACAO" in df.columns else None
+    ds_local_endereco = df["DS_LOCAL_VOTACAO_ENDERECO"] if "DS_LOCAL_VOTACAO_ENDERECO" in df.columns else None
+
+    base_cols = {
+        "arquivo_origem": path.name,
+        "ano": ano,
+        "uf": uf,
+        "cd_municipio": cd_municipio,
+        "nm_municipio": nm_municipio,
+        "nr_zona": nr_zona,
+        "nr_secao": nr_secao,
+        "nr_local_votacao": nr_local_votacao,
+        "nm_local_votacao": nm_local_votacao,
+        "ds_local_votacao_endereco": ds_local_endereco,
+    }
+
+    result = pd.DataFrame(base_cols)
+    print(f"   → Registros processados (locais/secao): {len(result)}")
+    return result
+
+
+# ========================================
+# ÍNDICES
+# ========================================
 
 def create_indexes(conn: sqlite3.Connection):
     """
@@ -218,29 +296,50 @@ def create_indexes(conn: sqlite3.Connection):
     """
     print("⚙️  Criando índices na tabela 'votos'...")
     cur = conn.cursor()
-    # Índices para filtros mais usados (ano, uf, cargo, município, partido)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_ano_uf ON votos(ano, uf)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_cargo ON votos(ano, uf, cd_cargo)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_municipio ON votos(ano, uf, cd_municipio)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_partido ON votos(ano, uf, sg_partido)")
     conn.commit()
-    print("✅ Índices criados (ou já existiam).")
+    print("✅ Índices em 'votos' criados (ou já existiam).")
 
+
+def create_locais_indexes(conn: sqlite3.Connection):
+    """
+    Índices para a tabela 'locais_secao' (usada no mapa).
+    """
+    print("⚙️  Criando índices na tabela 'locais_secao'...")
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_locais_ano_uf_mun_zona "
+        "ON locais_secao(ano, uf, cd_municipio, nr_zona)"
+    )
+    conn.commit()
+    print("✅ Índices em 'locais_secao' criados (ou já existiam).")
+
+
+# ========================================
+# INGESTÃO GERAL
+# ========================================
 
 def ingest_all(clear_table: bool = True) -> int:
     """
-    Lê todos os CSV no volume /app/dados_tse_volume e insere na tabela 'votos'.
-    Se clear_table=True, derruba e recria a tabela 'votos'.
+    Lê todos os CSV no volume /app/dados_tse_volume e insere nas tabelas:
+      - 'votos'         (arquivos de candidato/partido, ex: votacao_candidato_munzona_...)
+      - 'locais_secao'  (arquivos DETALHE_VOTACAO_SECAO_...)
+    Se clear_table=True, derruba e recria as tabelas.
     """
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
     if clear_table:
-        print("\n🗑 Limpando tabela 'votos' (DROP TABLE IF EXISTS)...")
+        print("\n🗑 Limpando tabelas 'votos' e 'locais_secao' (DROP TABLE IF EXISTS)...")
         cur.execute("DROP TABLE IF EXISTS votos")
+        cur.execute("DROP TABLE IF EXISTS locais_secao")
         conn.commit()
 
-    total = 0
+    total_votos = 0
+    total_locais = 0
 
     if not DATA_DIR.exists():
         print(f"❌ Pasta de dados não encontrada: {DATA_DIR}. Pulando.")
@@ -256,16 +355,32 @@ def ingest_all(clear_table: bool = True) -> int:
         return 0
 
     for csv_path in arquivos:
-        df_proc = processar_arquivo(csv_path)
-        if df_proc is not None and not df_proc.empty:
-            df_proc.to_sql("votos", conn, if_exists="append", index=False)
-            total += len(df_proc)
+        nome_upper = csv_path.name.upper()
+
+        # Arquivos de DETALHE_VOTACAO_SECAO vão para 'locais_secao'
+        if "DETALHE_VOTACAO_SECAO" in nome_upper:
+            print(f"\n➡ Processando arquivo de detalhe/seção (locais): {csv_path.name}")
+            df_locais = processar_detalhe_secao(csv_path)
+            if df_locais is not None and not df_locais.empty:
+                df_locais.to_sql("locais_secao", conn, if_exists="append", index=False)
+                total_locais += len(df_locais)
+                print("   ✔ Inserido na tabela 'locais_secao'.")
+            continue
+
+        # Demais arquivos são tratados como arquivos de votos (munzona, etc.)
+        print(f"\n➡ Processando arquivo de votos (candidato/partido): {csv_path.name}")
+        df_votos = processar_arquivo_votos(csv_path)
+        if df_votos is not None and not df_votos.empty:
+            df_votos.to_sql("votos", conn, if_exists="append", index=False)
+            total_votos += len(df_votos)
             print("   ✔ Inserido na tabela 'votos'.")
 
-    print(f"✅ Ingestão concluída. Registros inseridos (total): {total}")
+    print(f"✅ Ingestão concluída. Registros inseridos em 'votos': {total_votos}")
+    print(f"✅ Ingestão concluída. Registros inseridos em 'locais_secao': {total_locais}")
 
-    # ✅ Cria índices ao final para acelerar consultas
+    # Índices
     create_indexes(conn)
+    create_locais_indexes(conn)
 
     conn.close()
-    return total
+    return total_votos

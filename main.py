@@ -106,7 +106,7 @@ class Estatisticas(BaseModel):
     ufs_disponiveis: List[str]
 
 
-# 🆕 Modelo específico para o mapa (por escola/local de votação)
+# Modelo específico para o mapa (por escola/local de votação)
 class LocalMapaCandidato(BaseModel):
     ano: Optional[str]
     uf: Optional[str]
@@ -116,11 +116,11 @@ class LocalMapaCandidato(BaseModel):
     nr_zona: Optional[str]
     cd_local_votacao: Optional[str]
     nm_local_votacao: Optional[str]
-    endereco: Optional[str]  # ds_local_votacao_endereco no banco
+    endereco: Optional[str]  # ds_local_votacao_endereco em locais_secao
     nr_candidato: Optional[str]
     nm_candidato: Optional[str]
     sg_partido: Optional[str]
-    total_votos: int
+    total_votos: int          # total de votos do candidato/partido na ZONA
     secoes: List[str]
 
 
@@ -177,11 +177,11 @@ def criar_indices():
 def startup_event():
     print("\n🚀 Iniciando ingestão...")
     total = ingest_all(clear_table=True)
-    print(f"✅ Ingestão concluída. Registros inseridos (total): {total}")
+    print(f"✅ Ingestão concluída. Registros inseridos (total em 'votos'): {total}")
     print("⚙️  Criando índices na tabela 'votos'...")
     criar_indices()
     print("✅ Índices criados (ou já existiam).")
-    print(f"🚀 API pronta. Registros carregados: {contar_registros()}")
+    print(f"🚀 API pronta. Registros carregados na tabela 'votos': {contar_registros()}")
 
 
 # =============================
@@ -203,7 +203,7 @@ def root():
 def reload_dados():
     """
     Reprocessa todos os CSV disponíveis (no volume /app/dados_tse_volume)
-    e recria a tabela 'votos'.
+    e recria as tabelas.
     """
     total = ingest_all(clear_table=True)
     criar_indices()
@@ -367,12 +367,11 @@ def votos_totais(
     nr_secao: Optional[str] = None,
     nr_candidato: Optional[str] = None,
     sg_partido: Optional[str] = None,
-    tp_voto: Optional[str] = None,  # NOVO FILTRO OPCIONAL, SE QUISER
+    tp_voto: Optional[str] = None,
     limite: int = Query(default=50, ge=1, le=1000),
 ):
     """
     Totais de votos agregados com filtros opcionais.
-    Quando cd_municipio e cd_cargo forem enviados, eles são aplicados no WHERE.
     Retorna também o campo ds_sit_tot_turno (status eleitoral no turno).
     """
     conn = get_conn()
@@ -458,8 +457,7 @@ def votos_por_zona(
     limite: int = Query(default=200, ge=1, le=5000),
 ):
     """
-    Retorna votos agregados por zona/seção, com todos os campos de contexto:
-    turno, município, cargo, candidato, local de votação etc.
+    Retorna votos agregados por zona/seção, com todos os campos de contexto.
     """
     conn = get_conn()
     cur = conn.cursor()
@@ -542,7 +540,10 @@ def votos_por_zona(
     return [VotoZona(**dict(r)) for r in rows]
 
 
-# 🆕 ENDPOINT PARA O MAPA: AGREGA POR LOCAL (ESCOLA) + SEÇÕES
+# =============================
+# ENDPOINT DO MAPA (JOIN votos + locais_secao)
+# =============================
+
 @app.get("/mapa/locais", response_model=List[LocalMapaCandidato])
 def mapa_locais_por_escola(
     ano: Optional[str] = None,
@@ -551,41 +552,40 @@ def mapa_locais_por_escola(
     nr_turno: Optional[str] = None,
     cd_cargo: Optional[str] = None,
     nr_zona: Optional[str] = None,
-    nr_secao: Optional[str] = None,
-    cd_local_votacao: Optional[str] = None,
+    nr_secao: Optional[str] = None,          # filtro aplicado na tabela de locais
+    cd_local_votacao: Optional[str] = None,  # idem
     nr_candidato: Optional[str] = None,
     sg_partido: Optional[str] = None,
-    limite: int = Query(default=1000, ge=1, le=10000),
+    limite: int = Query(default=2000, ge=1, le=10000),
 ):
     """
-    Agrega votos por LOCAL DE VOTAÇÃO (escola), com filtros opcionais.
-
-    Uso típico no Lovable:
-      - ano, uf, cd_municipio, cd_cargo, nr_turno, nr_candidato
-      -> retorna cada escola com total de votos daquele candidato
-         e a lista de seções que existem lá.
+    Opção A:
+    - Usa os votos agregados por ZONA (tabela 'votos')
+    - Usa a tabela 'locais_secao' para descobrir seções / escolas / endereços de cada zona
+    - Cada escola no mapa representa um ponto pertencente à zona onde o candidato/partido teve votos.
+    - O campo 'total_votos' é o total de votos daquele candidato/partido na ZONA.
     """
     conn = get_conn()
     cur = conn.cursor()
 
+    # Subquery com votos agregados por ZONA
     sql = """
-        SELECT
-            ano,
-            uf,
-            nr_turno,
-            cd_municipio,
-            COALESCE(nm_municipio, 'Estadual') AS nm_municipio,
-            nr_zona,
-            cd_local_votacao,
-            nm_local_votacao,
-            ds_local_votacao_endereco AS endereco,
-            nr_candidato,
-            COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
-            sg_partido,
-            GROUP_CONCAT(DISTINCT nr_secao) AS secoes_csv,
-            SUM(votos) AS total_votos
-        FROM votos
-        WHERE 1=1
+        WITH votos_zona AS (
+            SELECT
+                ano,
+                uf,
+                nr_turno,
+                cd_municipio,
+                COALESCE(nm_municipio, 'Estadual') AS nm_municipio,
+                cd_cargo,
+                ds_cargo,
+                nr_candidato,
+                COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
+                sg_partido,
+                nr_zona,
+                SUM(votos) AS total_votos
+            FROM votos
+            WHERE 1=1
     """
     params: List = []
 
@@ -607,12 +607,6 @@ def mapa_locais_por_escola(
     if nr_zona:
         sql += " AND nr_zona = ?"
         params.append(nr_zona)
-    if nr_secao:
-        sql += " AND nr_secao = ?"
-        params.append(nr_secao)
-    if cd_local_votacao:
-        sql += " AND cd_local_votacao = ?"
-        params.append(cd_local_votacao)
     if nr_candidato:
         sql += " AND nr_candidato = ?"
         params.append(nr_candidato)
@@ -621,20 +615,67 @@ def mapa_locais_por_escola(
         params.append(sg_partido)
 
     sql += """
+            GROUP BY
+                ano,
+                uf,
+                nr_turno,
+                cd_municipio,
+                nm_municipio,
+                cd_cargo,
+                ds_cargo,
+                nr_candidato,
+                nm_candidato,
+                sg_partido,
+                nr_zona
+        )
+        SELECT
+            vz.ano,
+            vz.uf,
+            vz.nr_turno,
+            vz.cd_municipio,
+            vz.nm_municipio,
+            vz.nr_zona,
+            ls.nr_local_votacao AS cd_local_votacao,
+            ls.nm_local_votacao,
+            ls.ds_local_votacao_endereco AS endereco,
+            vz.nr_candidato,
+            vz.nm_candidato,
+            vz.sg_partido,
+            vz.total_votos,
+            GROUP_CONCAT(DISTINCT ls.nr_secao) AS secoes_csv
+        FROM votos_zona vz
+        JOIN locais_secao ls
+          ON ls.ano = vz.ano
+         AND ls.uf = vz.uf
+         AND ls.cd_municipio = vz.cd_municipio
+         AND ls.nr_zona = vz.nr_zona
+        WHERE 1=1
+    """
+
+    # Filtros específicos aplicados na tabela de locais (seção / local votação)
+    if nr_secao:
+        sql += " AND ls.nr_secao = ?"
+        params.append(nr_secao)
+    if cd_local_votacao:
+        sql += " AND ls.nr_local_votacao = ?"
+        params.append(cd_local_votacao)
+
+    sql += """
         GROUP BY
-            ano,
-            uf,
-            nr_turno,
-            cd_municipio,
-            nm_municipio,
-            nr_zona,
-            cd_local_votacao,
-            nm_local_votacao,
-            endereco,
-            nr_candidato,
-            nm_candidato,
-            sg_partido
-        ORDER BY total_votos DESC
+            vz.ano,
+            vz.uf,
+            vz.nr_turno,
+            vz.cd_municipio,
+            vz.nm_municipio,
+            vz.nr_zona,
+            ls.nr_local_votacao,
+            ls.nm_local_votacao,
+            ls.ds_local_votacao_endereco,
+            vz.nr_candidato,
+            vz.nm_candidato,
+            vz.sg_partido,
+            vz.total_votos
+        ORDER BY vz.total_votos DESC
         LIMIT ?
     """
     params.append(limite)
@@ -790,7 +831,6 @@ def listar_candidatos(
     return [CandidatoInfo(**dict(r)) for r in rows]
 
 
-# <-- ENDPOINT QUE O LOVABLE ESTÁ ESPERANDO
 @app.get("/partidos", response_model=List[PartidoInfo])
 def listar_partidos(
     ano: Optional[str] = None,
@@ -799,9 +839,7 @@ def listar_partidos(
 ):
     """
     Lista partidos com total de votos, e anos/UFs em que aparecem.
-    Usado pelo Lovable para:
-      - preencher dropdown de partido
-      - ranking de partidos
+    Usado pelo Lovable para dropdowns e rankings.
     """
     conn = get_conn()
     cur = conn.cursor()
