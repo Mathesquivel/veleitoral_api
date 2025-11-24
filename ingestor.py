@@ -337,7 +337,8 @@ def ingest_all(clear_table: bool = True) -> int:
       - 'locais_secao'  (arquivos DETALHE_VOTACAO_SECAO_...)
     Se clear_table=True, derruba e recria as tabelas.
     """
-    conn = sqlite3.connect(DB_PATH)
+    # timeout maior porque o reload faz operações pesadas (DROP, INSERT em massa, etc.)
+    conn = sqlite3.connect(DB_PATH, timeout=60)
     cur = conn.cursor()
 
     if clear_table:
