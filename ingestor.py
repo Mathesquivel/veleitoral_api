@@ -23,6 +23,7 @@ def detectar_colunas(df: pd.DataFrame):
     Detecta colunas mínimas pra considerar que é um arquivo de votação de candidato/partido.
     Usado para arquivos como:
       - votacao_candidato_munzona_XXXX_UF.csv
+      - votacao_partido_munzona_XXXX_UF.csv
     """
 
     # Coluna de votos
@@ -130,7 +131,7 @@ def ler_csv_flex(path: Path) -> pd.DataFrame | None:
 
 
 # ===============================================
-# PROCESSAMENTO DOS ARQUIVOS DE VOTOS (CANDIDATO)
+# PROCESSAMENTO DOS ARQUIVOS DE VOTOS (CANDIDATO/PARTIDO)
 # ===============================================
 
 def processar_arquivo_votos(path: Path) -> pd.DataFrame | None:
@@ -231,7 +232,7 @@ def processar_arquivo_votos(path: Path) -> pd.DataFrame | None:
 
 
 # ========================================
-# PROCESSAMENTO DOS ARQUIVOS DE DETALHE
+# PROCESSAMENTO DOS ARQUIVOS DE DETALHE (SEÇÃO / ESCOLA / ENDEREÇO)
 # ========================================
 
 def processar_detalhe_secao(path: Path) -> pd.DataFrame | None:
@@ -256,8 +257,6 @@ def processar_detalhe_secao(path: Path) -> pd.DataFrame | None:
     ano = ano or df.get("ANO_ELEICAO", pd.Series([None])).iloc[0]
     uf = uf_arquivo or df.get("SG_UF", pd.Series([None])).iloc[0]
 
-    # Colunas conforme layout do TSE (DETALHE_VOTACAO_SECAO)
-    # :contentReference[oaicite:0]{index=0}
     cd_municipio = df["CD_MUNICIPIO"] if "CD_MUNICIPIO" in df.columns else None
     nm_municipio = df["NM_MUNICIPIO"] if "NM_MUNICIPIO" in df.columns else None
     nr_zona = df["NR_ZONA"] if "NR_ZONA" in df.columns else None
@@ -265,7 +264,9 @@ def processar_detalhe_secao(path: Path) -> pd.DataFrame | None:
 
     nr_local_votacao = df["NR_LOCAL_VOTACAO"] if "NR_LOCAL_VOTACAO" in df.columns else None
     nm_local_votacao = df["NM_LOCAL_VOTACAO"] if "NM_LOCAL_VOTACAO" in df.columns else None
-    ds_local_endereco = df["DS_LOCAL_VOTACAO_ENDERECO"] if "DS_LOCAL_VOTACAO_ENDERECO" in df.columns else None
+    ds_local_endereco = (
+        df["DS_LOCAL_VOTACAO_ENDERECO"] if "DS_LOCAL_VOTACAO_ENDERECO" in df.columns else None
+    )
 
     base_cols = {
         "arquivo_origem": path.name,
@@ -307,15 +308,22 @@ def create_indexes(conn: sqlite3.Connection):
 def create_locais_indexes(conn: sqlite3.Connection):
     """
     Índices para a tabela 'locais_secao' (usada no mapa).
+
+    Se a tabela ainda não existir (por exemplo, porque nenhum arquivo
+    DETALHE_VOTACAO_SECAO foi carregado), apenas registra um aviso
+    e segue sem erro.
     """
     print("⚙️  Criando índices na tabela 'locais_secao'...")
     cur = conn.cursor()
-    cur.execute(
-        "CREATE INDEX IF NOT EXISTS idx_locais_ano_uf_mun_zona "
-        "ON locais_secao(ano, uf, cd_municipio, nr_zona)"
-    )
-    conn.commit()
-    print("✅ Índices em 'locais_secao' criados (ou já existiam).")
+    try:
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_locais_ano_uf_mun_zona "
+            "ON locais_secao(ano, uf, cd_municipio, nr_zona)"
+        )
+        conn.commit()
+        print("✅ Índices em 'locais_secao' criados (ou já existiam).")
+    except sqlite3.OperationalError:
+        print("⚠ Tabela 'locais_secao' ainda não existe. Nenhum índice criado (ok se ainda não há DETALHE_VOTACAO_SECAO).")
 
 
 # ========================================
@@ -367,7 +375,7 @@ def ingest_all(clear_table: bool = True) -> int:
                 print("   ✔ Inserido na tabela 'locais_secao'.")
             continue
 
-        # Demais arquivos são tratados como arquivos de votos (munzona, etc.)
+        # Demais arquivos são tratados como arquivos de votos (munzona, partido, etc.)
         print(f"\n➡ Processando arquivo de votos (candidato/partido): {csv_path.name}")
         df_votos = processar_arquivo_votos(csv_path)
         if df_votos is not None and not df_votos.empty:
