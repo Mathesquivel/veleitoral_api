@@ -165,15 +165,25 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
     # ✅ Status total no turno (vem do CSV como DS_SIT_TOT_TURNO)
     ds_sit_tot_turno = df["DS_SIT_TOT_TURNO"] if "DS_SIT_TOT_TURNO" in df.columns else None
 
-    # Possíveis colunas de local de votação (dependem do layout)
+    # 🔎 Identificação do local de votação (escola)
     cd_local = None
     nm_local = None
+    ds_local_endereco = None
+
     for col in df.columns:
-        upper = col.upper()
-        if cd_local is None and ("CD_LOCAL_VOT" in upper or "NR_LOCAL_VOT" in upper):
+        up = col.upper()
+
+        if cd_local is None and ("CD_LOCAL_VOT" in up or "NR_LOCAL_VOT" in up):
             cd_local = df[col]
-        if nm_local is None and ("NM_LOCAL_VOT" in upper or "DS_LOCAL_VOT" in upper):
+
+        if nm_local is None and ("NM_LOCAL_VOT" in up or "DS_LOCAL_VOT" in up):
             nm_local = df[col]
+
+        # 🆕 endereço da escola / local de votação
+        if ds_local_endereco is None and (
+            "ENDERECO" in up and ("LOCAL_VOT" in up or "LOC_VOT" in up)
+        ):
+            ds_local_endereco = df[col]
 
     base_cols = {
         "arquivo_origem": path.name,
@@ -191,6 +201,7 @@ def processar_arquivo(path: Path) -> pd.DataFrame | None:
         "nr_secao": df[secao_col] if secao_col else None,
         "cd_local_votacao": cd_local,
         "nm_local_votacao": nm_local,
+        "ds_local_votacao_endereco": ds_local_endereco,
         "ds_sit_tot_turno": ds_sit_tot_turno,  # ✅ NOVA COLUNA NORMALIZADA
         "votos": df[vote_col],
     }

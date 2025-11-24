@@ -106,6 +106,24 @@ class Estatisticas(BaseModel):
     ufs_disponiveis: List[str]
 
 
+# 🆕 Modelo específico para o mapa (por escola/local de votação)
+class LocalMapaCandidato(BaseModel):
+    ano: Optional[str]
+    uf: Optional[str]
+    nr_turno: Optional[str]
+    cd_municipio: Optional[str]
+    nm_municipio: Optional[str]
+    nr_zona: Optional[str]
+    cd_local_votacao: Optional[str]
+    nm_local_votacao: Optional[str]
+    endereco: Optional[str]  # ds_local_votacao_endereco no banco
+    nr_candidato: Optional[str]
+    nm_candidato: Optional[str]
+    sg_partido: Optional[str]
+    total_votos: int
+    secoes: List[str]
+
+
 # =============================
 # FUNÇÕES DE BANCO
 # =============================
@@ -522,6 +540,122 @@ def votos_por_zona(
     conn.close()
 
     return [VotoZona(**dict(r)) for r in rows]
+
+
+# 🆕 ENDPOINT PARA O MAPA: AGREGA POR LOCAL (ESCOLA) + SEÇÕES
+@app.get("/mapa/locais", response_model=List[LocalMapaCandidato])
+def mapa_locais_por_escola(
+    ano: Optional[str] = None,
+    uf: Optional[str] = None,
+    cd_municipio: Optional[str] = None,
+    nr_turno: Optional[str] = None,
+    cd_cargo: Optional[str] = None,
+    nr_zona: Optional[str] = None,
+    nr_secao: Optional[str] = None,
+    cd_local_votacao: Optional[str] = None,
+    nr_candidato: Optional[str] = None,
+    sg_partido: Optional[str] = None,
+    limite: int = Query(default=1000, ge=1, le=10000),
+):
+    """
+    Agrega votos por LOCAL DE VOTAÇÃO (escola), com filtros opcionais.
+
+    Uso típico no Lovable:
+      - ano, uf, cd_municipio, cd_cargo, nr_turno, nr_candidato
+      -> retorna cada escola com total de votos daquele candidato
+         e a lista de seções que existem lá.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+
+    sql = """
+        SELECT
+            ano,
+            uf,
+            nr_turno,
+            cd_municipio,
+            COALESCE(nm_municipio, 'Estadual') AS nm_municipio,
+            nr_zona,
+            cd_local_votacao,
+            nm_local_votacao,
+            ds_local_votacao_endereco AS endereco,
+            nr_candidato,
+            COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
+            sg_partido,
+            GROUP_CONCAT(DISTINCT nr_secao) AS secoes_csv,
+            SUM(votos) AS total_votos
+        FROM votos
+        WHERE 1=1
+    """
+    params: List = []
+
+    if ano:
+        sql += " AND ano = ?"
+        params.append(ano)
+    if uf:
+        sql += " AND uf = ?"
+        params.append(uf)
+    if cd_municipio:
+        sql += " AND cd_municipio = ?"
+        params.append(cd_municipio)
+    if nr_turno:
+        sql += " AND nr_turno = ?"
+        params.append(nr_turno)
+    if cd_cargo:
+        sql += " AND cd_cargo = ?"
+        params.append(cd_cargo)
+    if nr_zona:
+        sql += " AND nr_zona = ?"
+        params.append(nr_zona)
+    if nr_secao:
+        sql += " AND nr_secao = ?"
+        params.append(nr_secao)
+    if cd_local_votacao:
+        sql += " AND cd_local_votacao = ?"
+        params.append(cd_local_votacao)
+    if nr_candidato:
+        sql += " AND nr_candidato = ?"
+        params.append(nr_candidato)
+    if sg_partido:
+        sql += " AND sg_partido = ?"
+        params.append(sg_partido)
+
+    sql += """
+        GROUP BY
+            ano,
+            uf,
+            nr_turno,
+            cd_municipio,
+            nm_municipio,
+            nr_zona,
+            cd_local_votacao,
+            nm_local_votacao,
+            endereco,
+            nr_candidato,
+            nm_candidato,
+            sg_partido
+        ORDER BY total_votos DESC
+        LIMIT ?
+    """
+    params.append(limite)
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    resultado: List[LocalMapaCandidato] = []
+    for r in rows:
+        d = dict(r)
+        secoes_csv = d.pop("secoes_csv", "") or ""
+        secoes_list = [s for s in secoes_csv.split(",") if s]
+        resultado.append(
+            LocalMapaCandidato(
+                **d,
+                secoes=secoes_list,
+            )
+        )
+
+    return resultado
 
 
 @app.get("/votos/municipio", response_model=List[VotoMunicipio])
