@@ -116,7 +116,7 @@ class LocalMapaCandidato(BaseModel):
     nr_zona: Optional[str]
     cd_local_votacao: Optional[str]
     nm_local_votacao: Optional[str]
-    endereco: Optional[str]  # ds_local_votacao_endereco em locais_secao
+    endereco: Optional[str]  # ds_local_votacao_endereco em 'votos'
     nr_candidato: Optional[str]
     nm_candidato: Optional[str]
     sg_partido: Optional[str]
@@ -546,7 +546,7 @@ def votos_por_zona(
 
 
 # =============================
-# ENDPOINT DO MAPA (JOIN votos + locais_secao)
+# ENDPOINT DO MAPA (USANDO APENAS 'votos')
 # =============================
 
 @app.get("/mapa/locais", response_model=List[LocalMapaCandidato])
@@ -557,20 +557,25 @@ def mapa_locais_por_escola(
     nr_turno: Optional[str] = None,
     cd_cargo: Optional[str] = None,
     nr_zona: Optional[str] = None,
-    nr_secao: Optional[str] = None,          # filtro aplicado na tabela de locais
-    cd_local_votacao: Optional[str] = None,  # idem
+    nr_secao: Optional[str] = None,
+    cd_local_votacao: Optional[str] = None,
     nr_candidato: Optional[str] = None,
     sg_partido: Optional[str] = None,
     limite: int = Query(default=2000, ge=1, le=10000),
 ):
     """
     Cada registro representa um LOCAL DE VOTAÇÃO (escola) onde o candidato/partido teve votos.
-    O campo 'total_votos' é o total de votos do candidato naquele LOCAL (somando seções do local).
+    Usa apenas a tabela 'votos', pois ela já contém:
+      - cd_local_votacao  -> código do local
+      - nm_local_votacao  -> nome da escola
+      - ds_local_votacao_endereco -> endereço
+      - nr_secao          -> para listar as seções desse local
+
+    O campo 'total_votos' é o total de votos do candidato naquele LOCAL (somando as seções do local).
     """
     conn = get_conn()
     cur = conn.cursor()
 
-    # Subquery com votos agregados por LOCAL (zona + cd_local_votacao + candidato)
     sql = """
         WITH votos_local AS (
             SELECT
@@ -587,12 +592,15 @@ def mapa_locais_por_escola(
                 nr_zona,
                 cd_local_votacao,
                 nm_local_votacao,
+                ds_local_votacao_endereco AS endereco,
+                GROUP_CONCAT(DISTINCT nr_secao) AS secoes_csv,
                 SUM(votos) AS total_votos
             FROM votos
             WHERE 1=1
     """
     params: List = []
 
+    # Filtros na tabela de votos
     if ano:
         sql += " AND ano = ?"
         params.append(ano)
@@ -611,6 +619,12 @@ def mapa_locais_por_escola(
     if nr_zona:
         sql += " AND nr_zona = ?"
         params.append(nr_zona)
+    if nr_secao:
+        sql += " AND nr_secao = ?"
+        params.append(nr_secao)
+    if cd_local_votacao:
+        sql += " AND cd_local_votacao = ?"
+        params.append(cd_local_votacao)
     if nr_candidato:
         sql += " AND nr_candidato = ?"
         params.append(nr_candidato)
@@ -632,57 +646,26 @@ def mapa_locais_por_escola(
                 sg_partido,
                 nr_zona,
                 cd_local_votacao,
-                nm_local_votacao
+                nm_local_votacao,
+                endereco
         )
         SELECT
-            vl.ano,
-            vl.uf,
-            vl.nr_turno,
-            vl.cd_municipio,
-            vl.nm_municipio,
-            vl.nr_zona,
-            vl.cd_local_votacao,
-            COALESCE(vl.nm_local_votacao, ls.nm_local_votacao) AS nm_local_votacao,
-            ls.ds_local_votacao_endereco AS endereco,
-            vl.nr_candidato,
-            vl.nm_candidato,
-            vl.sg_partido,
-            vl.total_votos,
-            GROUP_CONCAT(DISTINCT ls.nr_secao) AS secoes_csv
-        FROM votos_local vl
-        LEFT JOIN locais_secao ls
-          ON ls.ano = vl.ano
-         AND ls.uf = vl.uf
-         AND ls.cd_municipio = vl.cd_municipio
-         AND ls.nr_zona = vl.nr_zona
-         AND ls.nr_local_votacao = vl.cd_local_votacao
-        WHERE 1=1
-    """
-
-    # Filtros específicos aplicados na tabela de locais (seção / local votação)
-    if nr_secao:
-        sql += " AND ls.nr_secao = ?"
-        params.append(nr_secao)
-    if cd_local_votacao:
-        sql += " AND ls.nr_local_votacao = ?"
-        params.append(cd_local_votacao)
-
-    sql += """
-        GROUP BY
-            vl.ano,
-            vl.uf,
-            vl.nr_turno,
-            vl.cd_municipio,
-            vl.nm_municipio,
-            vl.nr_zona,
-            vl.cd_local_votacao,
+            ano,
+            uf,
+            nr_turno,
+            cd_municipio,
+            nm_municipio,
+            nr_zona,
+            cd_local_votacao,
             nm_local_votacao,
-            ls.ds_local_votacao_endereco,
-            vl.nr_candidato,
-            vl.nm_candidato,
-            vl.sg_partido,
-            vl.total_votos
-        ORDER BY vl.total_votos DESC
+            endereco,
+            nr_candidato,
+            nm_candidato,
+            sg_partido,
+            total_votos,
+            secoes_csv
+        FROM votos_local
+        ORDER BY total_votos DESC
         LIMIT ?
     """
     params.append(limite)
@@ -941,6 +924,7 @@ def estatisticas():
     conn = get_conn()
     cur = conn.cursor()
 
+    # total de registros e votos
     try:
         cur.execute("SELECT COUNT(*) AS c, SUM(votos) AS t FROM votos")
         row = cur.fetchone()
@@ -966,11 +950,19 @@ def estatisticas():
     except sqlite3.OperationalError:
         total_partidos = 0
 
-    cur.execute("SELECT DISTINCT ano FROM votos WHERE ano IS NOT NULL")
-    anos = sorted({r["ano"] for r in cur.fetchall() if r["ano"]})
+    # anos disponíveis
+    try:
+        cur.execute("SELECT DISTINCT ano FROM votos WHERE ano IS NOT NULL")
+        anos = sorted({r["ano"] for r in cur.fetchall() if r["ano"]})
+    except sqlite3.OperationalError:
+        anos = []
 
-    cur.execute("SELECT DISTINCT uf FROM votos WHERE uf IS NOT NULL")
-    ufs = sorted({r["uf"] for r in cur.fetchall() if r["uf"]})
+    # ufs disponíveis
+    try:
+        cur.execute("SELECT DISTINCT uf FROM votos WHERE uf IS NOT NULL")
+        ufs = sorted({r["uf"] for r in cur.fetchall() if r["uf"]})
+    except sqlite3.OperationalError:
+        ufs = []
 
     conn.close()
 
