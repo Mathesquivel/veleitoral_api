@@ -166,6 +166,10 @@ def criar_indices():
             "ON votos(cd_cargo, ds_cargo)"
         )
         conn.commit()
+    except sqlite3.OperationalError:
+        # Isso acontece quando a tabela 'votos' ainda não existe (ex.: nenhum CSV carregado)
+        print("⚠ Não foi possível criar índices em 'votos' (tabela ainda não existe). "
+              "Isso é normal se nenhum CSV foi carregado ainda.")
     finally:
         conn.close()
 

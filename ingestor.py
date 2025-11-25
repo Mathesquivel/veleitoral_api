@@ -311,12 +311,16 @@ def create_indexes(conn: sqlite3.Connection):
     """
     print("⚙️  Criando índices na tabela 'votos'...")
     cur = conn.cursor()
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_ano_uf ON votos(ano, uf)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_cargo ON votos(ano, uf, cd_cargo)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_municipio ON votos(ano, uf, cd_municipio)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_partido ON votos(ano, uf, sg_partido)")
-    conn.commit()
-    print("✅ Índices em 'votos' criados (ou já existiam).")
+    try:
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_ano_uf ON votos(ano, uf)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_cargo ON votos(ano, uf, cd_cargo)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_municipio ON votos(ano, uf, cd_municipio)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_partido ON votos(ano, uf, sg_partido)")
+        conn.commit()
+        print("✅ Índices em 'votos' criados (ou já existiam).")
+    except sqlite3.OperationalError:
+        print("⚠ Tabela 'votos' ainda não existe. Índices não foram criados "
+              "(isso é normal se nenhum CSV foi processado).")
 
 
 def create_locais_indexes(conn: sqlite3.Connection):
@@ -337,7 +341,8 @@ def create_locais_indexes(conn: sqlite3.Connection):
         conn.commit()
         print("✅ Índices em 'locais_secao' criados (ou já existiam).")
     except sqlite3.OperationalError:
-        print("⚠ Tabela 'locais_secao' ainda não existe. Nenhum índice criado (ok se ainda não há DETALHE_VOTACAO_SECAO).")
+        print("⚠ Tabela 'locais_secao' ainda não existe. Nenhum índice criado "
+              "(ok se ainda não há DETALHE_VOTACAO_SECAO).")
 
 
 # ========================================
@@ -374,6 +379,9 @@ def ingest_all(clear_table: bool = True) -> int:
 
     if not arquivos:
         print("⚠ Nenhum arquivo CSV encontrado no volume.")
+        # Mesmo sem arquivos, ainda chamamos os criadores de índice (que agora são seguros)
+        create_indexes(conn)
+        create_locais_indexes(conn)
         conn.close()
         return 0
 
