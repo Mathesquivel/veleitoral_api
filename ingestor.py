@@ -24,6 +24,7 @@ def detectar_colunas(df: pd.DataFrame):
     Usado para arquivos como:
       - votacao_candidato_munzona_XXXX_UF.csv
       - votacao_partido_munzona_XXXX_UF.csv
+      - DETALHE_VOTACAO_SECAO_XXXX_UF.csv
     """
 
     # Coluna de votos
@@ -40,6 +41,8 @@ def detectar_colunas(df: pd.DataFrame):
         cand_col = "NM_CANDIDATO"
     elif "NM_URNA_CANDIDATO" in df.columns:
         cand_col = "NM_URNA_CANDIDATO"
+    elif "NM_VOTAVEL" in df.columns:  # usados em DETALHE_VOTACAO_SECAO
+        cand_col = "NM_VOTAVEL"
     else:
         cand_col = None
 
@@ -68,7 +71,7 @@ def extrair_ano_uf_do_arquivo(path: Path):
     Extrai ano e UF do nome do arquivo, mesmo quando dividido:
       - votacao_candidato_munzona_2018_SP.csv
       - votacao_candidato_munzona_2018_SP_9.csv
-      - votacao_candidato_munzona_2018_PB_PARTE2.csv
+      - votacao_candidato_munzona_2018_SP_PARTE2.csv
       - detalhe_votacao_secao_2022_SP.csv
     """
     nome = path.name.upper()
@@ -131,13 +134,13 @@ def ler_csv_flex(path: Path) -> pd.DataFrame | None:
 
 
 # ===============================================
-# PROCESSAMENTO DOS ARQUIVOS DE VOTOS (CANDIDATO/PARTIDO)
+# PROCESSAMENTO DOS ARQUIVOS DE VOTOS (CANDIDATO/PARTIDO/DETALHE_SECAO)
 # ===============================================
 
 def processar_arquivo_votos(path: Path) -> pd.DataFrame | None:
     """
     Processa arquivos de votação por candidato/partido (munzona etc.)
-    e retorna um DataFrame no formato da tabela 'votos'.
+    e também DETALHE_VOTACAO_SECAO, retornando um DataFrame no formato da tabela 'votos'.
     """
     df = ler_csv_flex(path)
     if df is None:
@@ -145,6 +148,16 @@ def processar_arquivo_votos(path: Path) -> pd.DataFrame | None:
 
     # Limpa marcadores especiais
     df = df.replace({"#NULO": None, "#NE": None})
+
+    # Normaliza colunas de candidato/votável para arquivos DETALHE_VOTACAO_SECAO:
+    # se não existe NM_CANDIDATO/NM_URNA_CANDIDATO mas existe NM_VOTAVEL, copia.
+    if "NM_CANDIDATO" not in df.columns and "NM_URNA_CANDIDATO" not in df.columns:
+        if "NM_VOTAVEL" in df.columns:
+            df["NM_CANDIDATO"] = df["NM_VOTAVEL"]
+
+    # se não existe NR_CANDIDATO mas existe NR_VOTAVEL, copia.
+    if "NR_CANDIDATO" not in df.columns and "NR_VOTAVEL" in df.columns:
+        df["NR_CANDIDATO"] = df["NR_VOTAVEL"]
 
     cols = detectar_colunas(df)
     if cols is None:
@@ -239,7 +252,8 @@ def processar_detalhe_secao(path: Path) -> pd.DataFrame | None:
     """
     Processa arquivos DETALHE_VOTACAO_SECAO_<ANO>_<UF>.csv
 
-    Esses arquivos NÃO possuem votos por candidato, mas têm:
+    Esses arquivos NÃO possuem votos por candidato agregados,
+    mas têm:
       - zona, seção
       - local de votação (escola)
       - endereço do local
@@ -366,14 +380,24 @@ def ingest_all(clear_table: bool = True) -> int:
     for csv_path in arquivos:
         nome_upper = csv_path.name.upper()
 
-        # Arquivos de DETALHE_VOTACAO_SECAO vão para 'locais_secao'
+        # Arquivos de DETALHE_VOTACAO_SECAO: usamos tanto para votos quanto para locais
         if "DETALHE_VOTACAO_SECAO" in nome_upper:
-            print(f"\n➡ Processando arquivo de detalhe/seção (locais): {csv_path.name}")
+            print(f"\n➡ Processando arquivo DETALHE_VOTACAO_SECAO (votos + locais): {csv_path.name}")
+
+            # 1) VOTOS por seção/candidato
+            df_votos = processar_arquivo_votos(csv_path)
+            if df_votos is not None and not df_votos.empty:
+                df_votos.to_sql("votos", conn, if_exists="append", index=False)
+                total_votos += len(df_votos)
+                print("   ✔ Votos inseridos na tabela 'votos'.")
+
+            # 2) LOCAIS / seções / endereço
             df_locais = processar_detalhe_secao(csv_path)
             if df_locais is not None and not df_locais.empty:
                 df_locais.to_sql("locais_secao", conn, if_exists="append", index=False)
                 total_locais += len(df_locais)
-                print("   ✔ Inserido na tabela 'locais_secao'.")
+                print("   ✔ Locais inseridos na tabela 'locais_secao'.")
+
             continue
 
         # Demais arquivos são tratados como arquivos de votos (munzona, partido, etc.)

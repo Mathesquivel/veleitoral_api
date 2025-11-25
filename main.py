@@ -120,7 +120,7 @@ class LocalMapaCandidato(BaseModel):
     nr_candidato: Optional[str]
     nm_candidato: Optional[str]
     sg_partido: Optional[str]
-    total_votos: int          # total de votos do candidato/partido na ZONA
+    total_votos: int          # total de votos do candidato no LOCAL
     secoes: List[str]
 
 
@@ -560,18 +560,15 @@ def mapa_locais_por_escola(
     limite: int = Query(default=2000, ge=1, le=10000),
 ):
     """
-    Opção A:
-    - Usa os votos agregados por ZONA (tabela 'votos')
-    - Usa a tabela 'locais_secao' para descobrir seções / escolas / endereços de cada zona
-    - Cada escola no mapa representa um ponto pertencente à zona onde o candidato/partido teve votos.
-    - O campo 'total_votos' é o total de votos daquele candidato/partido na ZONA.
+    Cada registro representa um LOCAL DE VOTAÇÃO (escola) onde o candidato/partido teve votos.
+    O campo 'total_votos' é o total de votos do candidato naquele LOCAL (somando seções do local).
     """
     conn = get_conn()
     cur = conn.cursor()
 
-    # Subquery com votos agregados por ZONA
+    # Subquery com votos agregados por LOCAL (zona + cd_local_votacao + candidato)
     sql = """
-        WITH votos_zona AS (
+        WITH votos_local AS (
             SELECT
                 ano,
                 uf,
@@ -584,6 +581,8 @@ def mapa_locais_por_escola(
                 COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
                 sg_partido,
                 nr_zona,
+                cd_local_votacao,
+                nm_local_votacao,
                 SUM(votos) AS total_votos
             FROM votos
             WHERE 1=1
@@ -627,29 +626,32 @@ def mapa_locais_por_escola(
                 nr_candidato,
                 nm_candidato,
                 sg_partido,
-                nr_zona
+                nr_zona,
+                cd_local_votacao,
+                nm_local_votacao
         )
         SELECT
-            vz.ano,
-            vz.uf,
-            vz.nr_turno,
-            vz.cd_municipio,
-            vz.nm_municipio,
-            vz.nr_zona,
-            ls.nr_local_votacao AS cd_local_votacao,
-            ls.nm_local_votacao,
+            vl.ano,
+            vl.uf,
+            vl.nr_turno,
+            vl.cd_municipio,
+            vl.nm_municipio,
+            vl.nr_zona,
+            vl.cd_local_votacao,
+            COALESCE(vl.nm_local_votacao, ls.nm_local_votacao) AS nm_local_votacao,
             ls.ds_local_votacao_endereco AS endereco,
-            vz.nr_candidato,
-            vz.nm_candidato,
-            vz.sg_partido,
-            vz.total_votos,
+            vl.nr_candidato,
+            vl.nm_candidato,
+            vl.sg_partido,
+            vl.total_votos,
             GROUP_CONCAT(DISTINCT ls.nr_secao) AS secoes_csv
-        FROM votos_zona vz
-        JOIN locais_secao ls
-          ON ls.ano = vz.ano
-         AND ls.uf = vz.uf
-         AND ls.cd_municipio = vz.cd_municipio
-         AND ls.nr_zona = vz.nr_zona
+        FROM votos_local vl
+        LEFT JOIN locais_secao ls
+          ON ls.ano = vl.ano
+         AND ls.uf = vl.uf
+         AND ls.cd_municipio = vl.cd_municipio
+         AND ls.nr_zona = vl.nr_zona
+         AND ls.nr_local_votacao = vl.cd_local_votacao
         WHERE 1=1
     """
 
@@ -663,20 +665,20 @@ def mapa_locais_por_escola(
 
     sql += """
         GROUP BY
-            vz.ano,
-            vz.uf,
-            vz.nr_turno,
-            vz.cd_municipio,
-            vz.nm_municipio,
-            vz.nr_zona,
-            ls.nr_local_votacao,
-            ls.nm_local_votacao,
+            vl.ano,
+            vl.uf,
+            vl.nr_turno,
+            vl.cd_municipio,
+            vl.nm_municipio,
+            vl.nr_zona,
+            vl.cd_local_votacao,
+            nm_local_votacao,
             ls.ds_local_votacao_endereco,
-            vz.nr_candidato,
-            vz.nm_candidato,
-            vz.sg_partido,
-            vz.total_votos
-        ORDER BY vz.total_votos DESC
+            vl.nr_candidato,
+            vl.nm_candidato,
+            vl.sg_partido,
+            vl.total_votos
+        ORDER BY vl.total_votos DESC
         LIMIT ?
     """
     params.append(limite)
