@@ -384,13 +384,15 @@ def votos_totais(
 ):
     """
     Totais de votos agregados com filtros opcionais.
-    Retorna também o campo ds_sit_tot_turno (status eleitoral no turno).
-
-    Usa a tabela 'candidatos_meta' (se existir) para complementar partido e status.
+    Retorna também o campo ds_sit_tot_turno (status eleitoral no turno),
+    quando disponível em candidatos_meta.
 
     ⚠ Para evitar consultas gigantes, é obrigatório informar pelo menos UM
       destes filtros: ano, uf, cd_municipio, cd_cargo, nr_candidato, sg_partido.
     """
+    if uf:
+        uf = uf.upper()
+
     if not any([ano, uf, cd_municipio, cd_cargo, nr_candidato, sg_partido]):
         raise HTTPException(
             status_code=400,
@@ -400,121 +402,123 @@ def votos_totais(
     conn = get_conn()
     cur = conn.cursor()
 
+    # Verifica se a tabela candidatos_meta existe
+    try:
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='candidatos_meta'"
+        )
+        has_candidatos_meta = cur.fetchone() is not None
+    except sqlite3.OperationalError:
+        has_candidatos_meta = False
+
     params: List = []
 
-    # Versão com JOIN em candidatos_meta (se a tabela existir)
-    sql_join = """
-        SELECT
-            v.ano,
-            v.uf,
-            v.cd_municipio,
-            COALESCE(v.nm_municipio, 'Estadual') AS nm_municipio,
-            v.cd_cargo,
-            v.ds_cargo,
-            v.nr_candidato,
-            COALESCE(v.nm_candidato, cm.nm_candidato, 'LEGENDA') AS nm_candidato,
-            COALESCE(v.sg_partido, cm.sg_partido) AS sg_partido,
-            COALESCE(v.ds_sit_tot_turno, cm.ds_sit_tot_turno) AS ds_sit_tot_turno,
-            SUM(v.votos) AS total_votos
-        FROM votos v
-        LEFT JOIN candidatos_meta cm
-          ON cm.ano = v.ano
-         AND cm.uf = v.uf
-         AND cm.cd_cargo = v.cd_cargo
-         AND cm.nr_turno = v.nr_turno
-         AND cm.nr_candidato = v.nr_candidato
-        WHERE 1=1
-    """
+    if has_candidatos_meta:
+        # Versão com JOIN em candidatos_meta
+        sql = """
+            SELECT
+                v.ano,
+                v.uf,
+                v.cd_municipio,
+                COALESCE(v.nm_municipio, 'Estadual') AS nm_municipio,
+                v.cd_cargo,
+                v.ds_cargo,
+                v.nr_candidato,
+                COALESCE(v.nm_candidato, cm.nm_candidato, 'LEGENDA') AS nm_candidato,
+                COALESCE(v.sg_partido, cm.sg_partido) AS sg_partido,
+                cm.ds_sit_tot_turno AS ds_sit_tot_turno,
+                SUM(v.votos) AS total_votos
+            FROM votos v
+            LEFT JOIN candidatos_meta cm
+              ON cm.ano = v.ano
+             AND cm.uf = v.uf
+             AND cm.cd_cargo = v.cd_cargo
+             AND cm.nr_turno = v.nr_turno
+             AND cm.nr_candidato = v.nr_candidato
+            WHERE 1=1
+        """
+        prefix = "v."
+    else:
+        # Versão SEM JOIN: não depende de ds_sit_tot_turno na tabela votos
+        sql = """
+            SELECT
+                ano,
+                uf,
+                cd_municipio,
+                COALESCE(nm_municipio, 'Estadual') AS nm_municipio,
+                cd_cargo,
+                ds_cargo,
+                nr_candidato,
+                COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
+                sg_partido,
+                NULL AS ds_sit_tot_turno,
+                SUM(votos) AS total_votos
+            FROM votos
+            WHERE 1=1
+        """
+        prefix = ""
 
-    # Versão fallback (sem JOIN), caso a tabela candidatos_meta ainda não exista
-    sql_sem_join = """
-        SELECT
-            ano,
-            uf,
-            cd_municipio,
-            COALESCE(nm_municipio, 'Estadual') AS nm_municipio,
-            cd_cargo,
-            ds_cargo,
-            nr_candidato,
-            COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
-            sg_partido,
-            ds_sit_tot_turno,
-            SUM(votos) AS total_votos
-        FROM votos
-        WHERE 1=1
-    """
-
-    # Construímos o trecho de filtros (é igual para as duas consultas)
-    filtros = ""
+    # Filtros
     if ano:
-        filtros += " AND v.ano = ?" if "FROM votos v" in sql_join else " AND ano = ?"
+        sql += f" AND {prefix}ano = ?"
         params.append(ano)
     if uf:
-        filtros += " AND v.uf = ?" if "FROM votos v" in sql_join else " AND uf = ?"
+        sql += f" AND {prefix}uf = ?"
         params.append(uf)
     if nr_turno:
-        filtros += " AND v.nr_turno = ?" if "FROM votos v" in sql_join else " AND nr_turno = ?"
+        sql += f" AND {prefix}nr_turno = ?"
         params.append(nr_turno)
     if cd_municipio:
-        filtros += " AND v.cd_municipio = ?" if "FROM votos v" in sql_join else " AND cd_municipio = ?"
+        sql += f" AND {prefix}cd_municipio = ?"
         params.append(cd_municipio)
     if cd_cargo:
-        filtros += " AND v.cd_cargo = ?" if "FROM votos v" in sql_join else " AND cd_cargo = ?"
+        sql += f" AND {prefix}cd_cargo = ?"
         params.append(cd_cargo)
     if nr_zona:
-        filtros += " AND v.nr_zona = ?" if "FROM votos v" in sql_join else " AND nr_zona = ?"
+        sql += f" AND {prefix}nr_zona = ?"
         params.append(nr_zona)
     if nr_secao:
-        filtros += " AND v.nr_secao = ?" if "FROM votos v" in sql_join else " AND nr_secao = ?"
+        sql += f" AND {prefix}nr_secao = ?"
         params.append(nr_secao)
     if nr_candidato:
-        filtros += " AND v.nr_candidato = ?" if "FROM votos v" in sql_join else " AND nr_candidato = ?"
+        sql += f" AND {prefix}nr_candidato = ?"
         params.append(nr_candidato)
     if sg_partido:
-        filtros += " AND v.sg_partido = ?" if "FROM votos v" in sql_join else " AND sg_partido = ?"
+        sql += f" AND {prefix}sg_partido = ?"
         params.append(sg_partido)
     if tp_voto:
-        filtros += " AND v.tp_voto = ?" if "FROM votos v" in sql_join else " AND tp_voto = ?"
+        sql += f" AND {prefix}tp_voto = ?"
         params.append(tp_voto)
 
-    # Completa as duas queries
-    sql_join += filtros + """
-        GROUP BY
-            v.ano, v.uf,
-            v.cd_municipio, v.nm_municipio,
-            v.cd_cargo, v.ds_cargo,
-            v.nr_candidato, v.nm_candidato,
-            v.sg_partido, v.ds_sit_tot_turno
-        ORDER BY total_votos DESC
-        LIMIT ?
-    """
-    sql_sem_join += filtros.replace("v.", "") + """
-        GROUP BY ano, uf,
-                 cd_municipio, nm_municipio,
-                 cd_cargo, ds_cargo,
-                 nr_candidato, nm_candidato,
-                 sg_partido, ds_sit_tot_turno
-        ORDER BY total_votos DESC
-        LIMIT ?
-    """
-    params_with_limit = params + [limite]
+    # GROUP BY / ORDER / LIMIT
+    if has_candidatos_meta:
+        sql += """
+            GROUP BY
+                v.ano, v.uf,
+                v.cd_municipio, v.nm_municipio,
+                v.cd_cargo, v.ds_cargo,
+                v.nr_candidato, v.nm_candidato,
+                v.sg_partido, cm.ds_sit_tot_turno
+            ORDER BY total_votos DESC
+            LIMIT ?
+        """
+    else:
+        sql += """
+            GROUP BY ano, uf,
+                     cd_municipio, nm_municipio,
+                     cd_cargo, ds_cargo,
+                     nr_candidato, nm_candidato,
+                     sg_partido
+            ORDER BY total_votos DESC
+            LIMIT ?
+        """
 
-    rows = []
-    try:
-        # Tenta a versão com JOIN em candidatos_meta
-        cur.execute(sql_join, params_with_limit)
-        rows = cur.fetchall()
-    except sqlite3.OperationalError as e:
-        # Se a tabela candidatos_meta ainda não existe, cai para a versão antiga
-        if "no such table: candidatos_meta" in str(e):
-            print("⚠ Tabela 'candidatos_meta' não existe. Usando consulta sem JOIN (comportamento antigo).")
-            cur.execute(sql_sem_join, params_with_limit)
-            rows = cur.fetchall()
-        else:
-            conn.close()
-            raise
+    params.append(limite)
 
+    cur.execute(sql, params)
+    rows = cur.fetchall()
     conn.close()
+
     return [VotoTotal(**dict(r)) for r in rows]
 
 
@@ -536,6 +540,9 @@ def votos_por_zona(
 
     ⚠ Obrigatório informar pelo menos ano ou uf, para evitar consultas gigantes.
     """
+    if uf:
+        uf = uf.upper()
+
     if not any([ano, uf]):
         raise HTTPException(
             status_code=400,
@@ -655,6 +662,7 @@ def mapa_locais_por_escola(
     ⚠ Filtros obrigatórios: ano, uf, cd_municipio, nr_turno, cd_cargo.
     Recomenda-se sempre informar também nr_candidato.
     """
+    uf = uf.upper()
     offset = (page - 1) * page_size
 
     conn = get_conn()
@@ -689,7 +697,7 @@ def mapa_locais_por_escola(
     """
     params: List = [ano, uf, cd_municipio, nr_turno, cd_cargo]
 
-    # Filtros adicionais na tabela de votos
+    # Filtros adicionais
     if nr_candidato:
         sql += " AND nr_candidato = ?"
         params.append(nr_candidato)
@@ -772,6 +780,9 @@ def votos_por_municipio(
     """
     ⚠ Obrigatório informar pelo menos ano ou uf.
     """
+    if uf:
+        uf = uf.upper()
+
     if not any([ano, uf]):
         raise HTTPException(
             status_code=400,
@@ -825,6 +836,9 @@ def votos_por_cargo(
     """
     ⚠ Obrigatório informar pelo menos ano ou uf.
     """
+    if uf:
+        uf = uf.upper()
+
     if not any([ano, uf]):
         raise HTTPException(
             status_code=400,
@@ -880,6 +894,9 @@ def listar_candidatos(
     """
     ⚠ Obrigatório informar pelo menos ano ou uf.
     """
+    if uf:
+        uf = uf.upper()
+
     if not any([ano, uf]):
         raise HTTPException(
             status_code=400,
@@ -934,6 +951,9 @@ def listar_partidos(
     ⚠ Obrigatório informar pelo menos ano ou uf.
     Usa candidatos_meta (se existir) para complementar sg_partido.
     """
+    if uf:
+        uf = uf.upper()
+
     if not any([ano, uf]):
         raise HTTPException(
             status_code=400,
@@ -1036,6 +1056,9 @@ def ranking_partidos(
     """
     ⚠ Obrigatório informar pelo menos ano ou uf.
     """
+    if uf:
+        uf = uf.upper()
+
     if not any([ano, uf]):
         raise HTTPException(
             status_code=400,

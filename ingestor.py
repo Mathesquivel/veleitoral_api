@@ -467,16 +467,12 @@ def create_indexes(conn: sqlite3.Connection):
         cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_cargo ON votos(ano, uf, cd_cargo)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_municipio ON votos(ano, uf, cd_municipio)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_partido ON votos(ano, uf, sg_partido)")
-
-        # Índice focado no mapa: filtros típicos de /mapa/locais
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_votos_mapa_locais
             ON votos(ano, uf, cd_municipio, cd_cargo, nr_turno, nr_candidato, cd_local_votacao)
             """
         )
-
-        # Índice para navegação por zona/seção
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_votos_zona_secao
