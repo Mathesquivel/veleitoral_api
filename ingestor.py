@@ -9,7 +9,7 @@ import re
 
 BASE_DIR = Path(__file__).parent
 
-# Agora a ingestão lê APENAS do volume do Railway
+# A ingestão lê APENAS do volume do Railway
 DATA_DIR = Path("/app/dados_tse_volume")
 
 DB_PATH = BASE_DIR / "tse_eleicoes.db"
@@ -476,7 +476,7 @@ def create_indexes(conn: sqlite3.Connection):
             """
         )
 
-        # Opcional: índice para navegação por zona/seção
+        # Índice para navegação por zona/seção
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_votos_zona_secao
@@ -577,45 +577,55 @@ def ingest_all(clear_table: bool = True) -> int:
         return 0
 
     for csv_path in arquivos:
-        nome_upper = csv_path.name.upper()
+        nome = csv_path.name
+        nome_upper = nome.upper()
+        print(f"\n📦 Arquivo detectado no volume: {nome} (upper={nome_upper})")
 
         # 1) Arquivos de DETALHE_VOTACAO_SECAO -> 'locais_secao'
         if "DETALHE_VOTACAO_SECAO" in nome_upper:
-            print(f"\n➡ Processando arquivo de detalhe/seção (locais): {csv_path.name}")
+            print(f"➡ Classificado como DETALHE_VOTACAO_SECAO (locais_secao): {nome}")
             df_locais = processar_detalhe_secao(csv_path)
             if df_locais is not None and not df_locais.empty:
                 df_locais.to_sql("locais_secao", conn, if_exists="append", index=False)
                 total_locais += len(df_locais)
                 print("   ✔ Inserido na tabela 'locais_secao'.")
+            else:
+                print("   ⚠ Nenhum registro gerado para 'locais_secao' a partir deste arquivo.")
             continue
 
-        # 2) Arquivos VOTACAO_CANDIDATO_MUNZONA -> 'candidatos_meta'
-        if "VOTACAO_CANDIDATO_MUNZONA" in nome_upper:
-            print(f"\n➡ Processando arquivo de metadados de candidatos: {csv_path.name}")
+        # 2) Arquivos de METADADOS DE CANDIDATOS: qualquer coisa com CANDIDATO e MUNZONA
+        if "CANDIDATO" in nome_upper and "MUNZONA" in nome_upper:
+            print(f"➡ Classificado como METADADOS DE CANDIDATOS (candidatos_meta): {nome}")
             df_cand = processar_candidatos_meta(csv_path)
             if df_cand is not None and not df_cand.empty:
                 df_cand.to_sql("candidatos_meta", conn, if_exists="append", index=False)
                 total_candidatos_meta += len(df_cand)
                 print("   ✔ Inserido na tabela 'candidatos_meta'.")
+            else:
+                print("   ⚠ Nenhum registro gerado para 'candidatos_meta' a partir deste arquivo.")
             continue
 
-        # 3) Arquivos VOTACAO_PARTIDO_MUNZONA -> 'partidos_meta'
-        if "VOTACAO_PARTIDO_MUNZONA" in nome_upper:
-            print(f"\n➡ Processando arquivo de metadados de partidos: {csv_path.name}")
+        # 3) Arquivos de METADADOS DE PARTIDOS: qualquer coisa com PARTIDO e MUNZONA
+        if "PARTIDO" in nome_upper and "MUNZONA" in nome_upper:
+            print(f"➡ Classificado como METADADOS DE PARTIDOS (partidos_meta): {nome}")
             df_part = processar_partidos_meta(csv_path)
             if df_part is not None and not df_part.empty:
                 df_part.to_sql("partidos_meta", conn, if_exists="append", index=False)
                 total_partidos_meta += len(df_part)
                 print("   ✔ Inserido na tabela 'partidos_meta'.")
+            else:
+                print("   ⚠ Nenhum registro gerado para 'partidos_meta' a partir deste arquivo.")
             continue
 
         # 4) Demais arquivos com votos (seção/candidato) -> 'votos'
-        print(f"\n➡ Processando arquivo de votos (seção/candidato/partido): {csv_path.name}")
+        print(f"➡ Classificado como ARQUIVO DE VOTOS (votos): {nome}")
         df_votos = processar_arquivo_votos(csv_path)
         if df_votos is not None and not df_votos.empty:
             df_votos.to_sql("votos", conn, if_exists="append", index=False)
             total_votos += len(df_votos)
             print("   ✔ Inserido na tabela 'votos'.")
+        else:
+            print("   ⚠ Nenhum registro de votos gerado a partir deste arquivo.")
 
     print(f"✅ Ingestão concluída. Registros inseridos em 'votos': {total_votos}")
     print(f"✅ Ingestão concluída. Registros inseridos em 'locais_secao': {total_locais}")

@@ -932,6 +932,7 @@ def listar_partidos(
     Lista partidos com total de votos, e anos/UFs em que aparecem.
 
     ⚠ Obrigatório informar pelo menos ano ou uf.
+    Usa candidatos_meta (se existir) para complementar sg_partido.
     """
     if not any([ano, uf]):
         raise HTTPException(
@@ -942,7 +943,27 @@ def listar_partidos(
     conn = get_conn()
     cur = conn.cursor()
 
-    sql = """
+    params: List = []
+
+    # Versão com JOIN em candidatos_meta
+    sql_join = """
+        SELECT
+            COALESCE(v.sg_partido, cm.sg_partido) AS sg_partido,
+            SUM(v.votos) AS total_votos,
+            GROUP_CONCAT(DISTINCT v.ano) AS anos_csv,
+            GROUP_CONCAT(DISTINCT v.uf) AS ufs_csv
+        FROM votos v
+        LEFT JOIN candidatos_meta cm
+          ON cm.ano = v.ano
+         AND cm.uf = v.uf
+         AND cm.cd_cargo = v.cd_cargo
+         AND cm.nr_turno = v.nr_turno
+         AND cm.nr_candidato = v.nr_candidato
+        WHERE 1=1
+    """
+
+    # Versão fallback (sem JOIN), caso candidatos_meta ainda não exista
+    sql_sem_join = """
         SELECT
             sg_partido,
             SUM(votos) AS total_votos,
@@ -951,24 +972,41 @@ def listar_partidos(
         FROM votos
         WHERE 1=1
     """
-    params: List = []
 
+    filtros = ""
     if ano:
-        sql += " AND ano = ?"
+        filtros += " AND v.ano = ?"
         params.append(ano)
     if uf:
-        sql += " AND uf = ?"
+        filtros += " AND v.uf = ?"
         params.append(uf)
 
-    sql += """
+    sql_join += filtros + """
+        GROUP BY COALESCE(v.sg_partido, cm.sg_partido)
+        ORDER BY total_votos DESC
+        LIMIT ?
+    """
+    sql_sem_join += filtros.replace("v.", "") + """
         GROUP BY sg_partido
         ORDER BY total_votos DESC
         LIMIT ?
     """
-    params.append(limite)
 
-    cur.execute(sql, params)
-    rows = cur.fetchall()
+    params_with_limit = params + [limite]
+
+    rows = []
+    try:
+        cur.execute(sql_join, params_with_limit)
+        rows = cur.fetchall()
+    except sqlite3.OperationalError as e:
+        if "no such table: candidatos_meta" in str(e):
+            print("⚠ Tabela 'candidatos_meta' não existe. Usando consulta sem JOIN em /partidos.")
+            cur.execute(sql_sem_join, params_with_limit)
+            rows = cur.fetchall()
+        else:
+            conn.close()
+            raise
+
     conn.close()
 
     result: List[PartidoInfo] = []
