@@ -22,9 +22,8 @@ def detectar_colunas(df: pd.DataFrame):
     """
     Detecta colunas mínimas pra considerar que é um arquivo de votação de candidato/partido.
     Usado para arquivos como:
-      - votacao_candidato_munzona_XXXX_UF.csv
-      - votacao_partido_munzona_XXXX_UF.csv
-      - DETALHE_VOTACAO_SECAO_XXXX_UF.csv
+      - votacao_secao_XXXX_UF.csv
+      - outros arquivos que trazem votos NOMINAIS ou de LEGENDA por seção/mun/zona.
     """
 
     # Coluna de votos
@@ -41,8 +40,6 @@ def detectar_colunas(df: pd.DataFrame):
         cand_col = "NM_CANDIDATO"
     elif "NM_URNA_CANDIDATO" in df.columns:
         cand_col = "NM_URNA_CANDIDATO"
-    elif "NM_VOTAVEL" in df.columns:  # usados em DETALHE_VOTACAO_SECAO
-        cand_col = "NM_VOTAVEL"
     else:
         cand_col = None
 
@@ -71,8 +68,9 @@ def extrair_ano_uf_do_arquivo(path: Path):
     Extrai ano e UF do nome do arquivo, mesmo quando dividido:
       - votacao_candidato_munzona_2018_SP.csv
       - votacao_candidato_munzona_2018_SP_9.csv
-      - votacao_candidato_munzona_2018_SP_PARTE2.csv
+      - votacao_candidato_munzona_2018_PB_PARTE2.csv
       - detalhe_votacao_secao_2022_SP.csv
+      - votacao_secao_2024_AC.csv
     """
     nome = path.name.upper()
     ano = None
@@ -134,13 +132,17 @@ def ler_csv_flex(path: Path) -> pd.DataFrame | None:
 
 
 # ===============================================
-# PROCESSAMENTO DOS ARQUIVOS DE VOTOS (CANDIDATO/PARTIDO/DETALHE_SECAO)
+# PROCESSAMENTO DOS ARQUIVOS DE VOTOS (SEÇÃO / ESCOLA)
 # ===============================================
 
 def processar_arquivo_votos(path: Path) -> pd.DataFrame | None:
     """
-    Processa arquivos de votação por candidato/partido (munzona etc.)
-    e também DETALHE_VOTACAO_SECAO, retornando um DataFrame no formato da tabela 'votos'.
+    Processa arquivos de votação por seção/escola (como votacao_secao_..., etc.)
+    e retorna um DataFrame no formato da tabela 'votos'.
+
+    IMPORTANTE:
+    - NÃO é mais usado para arquivos VOTACAO_CANDIDATO_MUNZONA nem VOTACAO_PARTIDO_MUNZONA.
+      Esses são tratados como METADADOS (candidatos_meta / partidos_meta).
     """
     df = ler_csv_flex(path)
     if df is None:
@@ -149,19 +151,9 @@ def processar_arquivo_votos(path: Path) -> pd.DataFrame | None:
     # Limpa marcadores especiais
     df = df.replace({"#NULO": None, "#NE": None})
 
-    # Normaliza colunas de candidato/votável para arquivos DETALHE_VOTACAO_SECAO:
-    # se não existe NM_CANDIDATO/NM_URNA_CANDIDATO mas existe NM_VOTAVEL, copia.
-    if "NM_CANDIDATO" not in df.columns and "NM_URNA_CANDIDATO" not in df.columns:
-        if "NM_VOTAVEL" in df.columns:
-            df["NM_CANDIDATO"] = df["NM_VOTAVEL"]
-
-    # se não existe NR_CANDIDATO mas existe NR_VOTAVEL, copia.
-    if "NR_CANDIDATO" not in df.columns and "NR_VOTAVEL" in df.columns:
-        df["NR_CANDIDATO"] = df["NR_VOTAVEL"]
-
     cols = detectar_colunas(df)
     if cols is None:
-        print("⚠ Não parece ser arquivo de votação de candidato/partido. Pulando.")
+        print("⚠ Não parece ser arquivo de votação de seção/candidato/partido. Pulando.")
         return None
 
     vote_col = cols["vote"]
@@ -252,8 +244,7 @@ def processar_detalhe_secao(path: Path) -> pd.DataFrame | None:
     """
     Processa arquivos DETALHE_VOTACAO_SECAO_<ANO>_<UF>.csv
 
-    Esses arquivos NÃO possuem votos por candidato agregados,
-    mas têm:
+    Esses arquivos NÃO possuem votos por candidato, mas têm:
       - zona, seção
       - local de votação (escola)
       - endereço do local
@@ -301,6 +292,166 @@ def processar_detalhe_secao(path: Path) -> pd.DataFrame | None:
 
 
 # ========================================
+# PROCESSAMENTO DOS ARQUIVOS DE METADADOS DE CANDIDATOS
+# ========================================
+
+def processar_candidatos_meta(path: Path) -> pd.DataFrame | None:
+    """
+    Processa arquivos VOTACAO_CANDIDATO_MUNZONA_<ANO>_<UF>.csv
+
+    Aqui NÃO vamos inserir votos na tabela 'votos'.
+    Em vez disso, criamos uma tabela de metadados 'candidatos_meta' com:
+
+      - ano, uf, cd_cargo, nr_turno
+      - nr_candidato, nm_candidato (urna)
+      - sg_partido, nm_partido
+      - ds_sit_tot_turno (eleito, não eleito, suplente...)
+      - outras situações (opcionais)
+
+    A ideia é complementar os dados da tabela 'votos' sem duplicar contagem de votos.
+    """
+    df = ler_csv_flex(path)
+    if df is None:
+        return None
+
+    df = df.replace({"#NULO": None, "#NE": None})
+
+    # Ano e UF
+    ano_arquivo, uf_arquivo = extrair_ano_uf_do_arquivo(path)
+    ano = ano_arquivo or df.get("ANO_ELEICAO", pd.Series([None])).iloc[0]
+    uf = uf_arquivo or df.get("SG_UF", pd.Series([None])).iloc[0]
+
+    # Campos básicos
+    cd_cargo = df["CD_CARGO"] if "CD_CARGO" in df.columns else None
+    nr_turno = df["NR_TURNO"] if "NR_TURNO" in df.columns else None
+    cd_municipio = df["CD_MUNICIPIO"] if "CD_MUNICIPIO" in df.columns else None
+    nm_municipio = df["NM_MUNICIPIO"] if "NM_MUNICIPIO" in df.columns else None
+
+    nr_candidato = df["NR_CANDIDATO"] if "NR_CANDIDATO" in df.columns else None
+
+    # Nome do candidato: preferimos o nome de urna, se existir
+    if "NM_URNA_CANDIDATO" in df.columns:
+        nm_candidato = df["NM_URNA_CANDIDATO"]
+    elif "NM_CANDIDATO" in df.columns:
+        nm_candidato = df["NM_CANDIDATO"]
+    else:
+        nm_candidato = None
+
+    sg_partido = df["SG_PARTIDO"] if "SG_PARTIDO" in df.columns else None
+    nm_partido = df["NM_PARTIDO"] if "NM_PARTIDO" in df.columns else None
+
+    ds_sit_tot_turno = df["DS_SIT_TOT_TURNO"] if "DS_SIT_TOT_TURNO" in df.columns else None
+
+    # Situações adicionais (quando existirem)
+    ds_situacao_candidatura = (
+        df["DS_SITUACAO_CANDIDATURA"] if "DS_SITUACAO_CANDIDATURA" in df.columns else None
+    )
+
+    base_cols = {
+        "arquivo_origem": path.name,
+        "ano": ano,
+        "uf": uf,
+        "cd_cargo": cd_cargo,
+        "nr_turno": nr_turno,
+        "cd_municipio": cd_municipio,
+        "nm_municipio": nm_municipio,
+        "nr_candidato": nr_candidato,
+        "nm_candidato": nm_candidato,
+        "sg_partido": sg_partido,
+        "nm_partido": nm_partido,
+        "ds_sit_tot_turno": ds_sit_tot_turno,
+        "ds_situacao_candidatura": ds_situacao_candidatura,
+    }
+
+    result = pd.DataFrame(base_cols)
+
+    # Remover duplicados por chave lógico-eleitoral
+    subset = ["ano", "uf", "cd_cargo", "nr_turno", "nr_candidato"]
+    subset = [c for c in subset if c in result.columns]
+    if subset:
+        before = len(result)
+        result = result.drop_duplicates(subset=subset)
+        print(f"   → Registros candidatos_meta (após deduplicar por {subset}): {len(result)} (antes: {before})")
+    else:
+        print(f"   → Registros candidatos_meta (sem chave de deduplicação definida): {len(result)}")
+
+    return result
+
+
+# ========================================
+# PROCESSAMENTO DOS ARQUIVOS DE METADADOS DE PARTIDOS
+# ========================================
+
+def processar_partidos_meta(path: Path) -> pd.DataFrame | None:
+    """
+    Processa arquivos VOTACAO_PARTIDO_MUNZONA_<ANO>_<UF>.csv
+
+    Aqui também não vamos inserir votos na tabela 'votos'. Vamos criar
+    uma tabela de metadados 'partidos_meta', com:
+
+      - ano, uf, cd_cargo, nr_turno
+      - cd_municipio, nm_municipio
+      - sg_partido, nm_partido
+      - ds_sit_tot_turno
+      - (opcional) algum agregado de votos de legenda
+    """
+    df = ler_csv_flex(path)
+    if df is None:
+        return None
+
+    df = df.replace({"#NULO": None, "#NE": None})
+
+    ano_arquivo, uf_arquivo = extrair_ano_uf_do_arquivo(path)
+    ano = ano_arquivo or df.get("ANO_ELEICAO", pd.Series([None])).iloc[0]
+    uf = uf_arquivo or df.get("SG_UF", pd.Series([None])).iloc[0]
+
+    cd_cargo = df["CD_CARGO"] if "CD_CARGO" in df.columns else None
+    nr_turno = df["NR_TURNO"] if "NR_TURNO" in df.columns else None
+    cd_municipio = df["CD_MUNICIPIO"] if "CD_MUNICIPIO" in df.columns else None
+    nm_municipio = df["NM_MUNICIPIO"] if "NM_MUNICIPIO" in df.columns else None
+
+    sg_partido = df["SG_PARTIDO"] if "SG_PARTIDO" in df.columns else None
+    nm_partido = df["NM_PARTIDO"] if "NM_PARTIDO" in df.columns else None
+
+    ds_sit_tot_turno = df["DS_SIT_TOT_TURNO"] if "DS_SIT_TOT_TURNO" in df.columns else None
+
+    # Exemplo de agregado de legenda (se existir)
+    if "QT_TOTAL_VOTOS_LEG_VALIDOS" in df.columns:
+        qt_total_votos_leg_validos = pd.to_numeric(
+            df["QT_TOTAL_VOTOS_LEG_VALIDOS"], errors="coerce"
+        )
+    else:
+        qt_total_votos_leg_validos = None
+
+    base_cols = {
+        "arquivo_origem": path.name,
+        "ano": ano,
+        "uf": uf,
+        "cd_cargo": cd_cargo,
+        "nr_turno": nr_turno,
+        "cd_municipio": cd_municipio,
+        "nm_municipio": nm_municipio,
+        "sg_partido": sg_partido,
+        "nm_partido": nm_partido,
+        "ds_sit_tot_turno": ds_sit_tot_turno,
+        "qt_total_votos_leg_validos": qt_total_votos_leg_validos,
+    }
+
+    result = pd.DataFrame(base_cols)
+
+    subset = ["ano", "uf", "cd_cargo", "nr_turno", "cd_municipio", "sg_partido"]
+    subset = [c for c in subset if c in result.columns]
+    if subset:
+        before = len(result)
+        result = result.drop_duplicates(subset=subset)
+        print(f"   → Registros partidos_meta (após deduplicar por {subset}): {len(result)} (antes: {before})")
+    else:
+        print(f"   → Registros partidos_meta (sem chave de deduplicação definida): {len(result)}")
+
+    return result
+
+
+# ========================================
 # ÍNDICES
 # ========================================
 
@@ -316,20 +467,32 @@ def create_indexes(conn: sqlite3.Connection):
         cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_cargo ON votos(ano, uf, cd_cargo)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_municipio ON votos(ano, uf, cd_municipio)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_votos_partido ON votos(ano, uf, sg_partido)")
+
+        # Índice focado no mapa: filtros típicos de /mapa/locais
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_votos_mapa_locais
+            ON votos(ano, uf, cd_municipio, cd_cargo, nr_turno, nr_candidato, cd_local_votacao)
+            """
+        )
+
+        # Opcional: índice para navegação por zona/seção
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_votos_zona_secao
+            ON votos(ano, uf, cd_municipio, nr_zona, nr_secao)
+            """
+        )
+
         conn.commit()
         print("✅ Índices em 'votos' criados (ou já existiam).")
-    except sqlite3.OperationalError:
-        print("⚠ Tabela 'votos' ainda não existe. Índices não foram criados "
-              "(isso é normal se nenhum CSV foi processado).")
+    except sqlite3.OperationalError as e:
+        print(f"⚠ Não foi possível criar índices em 'votos': {e}")
 
 
 def create_locais_indexes(conn: sqlite3.Connection):
     """
-    Índices para a tabela 'locais_secao' (usada no mapa).
-
-    Se a tabela ainda não existir (por exemplo, porque nenhum arquivo
-    DETALHE_VOTACAO_SECAO foi carregado), apenas registra um aviso
-    e segue sem erro.
+    Índices para a tabela 'locais_secao' (usada no mapa), quando existir.
     """
     print("⚙️  Criando índices na tabela 'locais_secao'...")
     cur = conn.cursor()
@@ -341,8 +504,33 @@ def create_locais_indexes(conn: sqlite3.Connection):
         conn.commit()
         print("✅ Índices em 'locais_secao' criados (ou já existiam).")
     except sqlite3.OperationalError:
-        print("⚠ Tabela 'locais_secao' ainda não existe. Nenhum índice criado "
-              "(ok se ainda não há DETALHE_VOTACAO_SECAO).")
+        print("⚠ Tabela 'locais_secao' ainda não existe. Nenhum índice criado (ok se ainda não há DETALHE_VOTACAO_SECAO).")
+
+
+def create_meta_indexes(conn: sqlite3.Connection):
+    """
+    Índices para tabelas de metadados (candidatos_meta, partidos_meta).
+    """
+    cur = conn.cursor()
+    print("⚙️  Criando índices nas tabelas de metadados (candidatos_meta, partidos_meta)...")
+    try:
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_candidatos_meta_chave "
+            "ON candidatos_meta(ano, uf, cd_cargo, nr_turno, nr_candidato)"
+        )
+    except sqlite3.OperationalError:
+        print("⚠ Tabela 'candidatos_meta' ainda não existe. Nenhum índice criado (ok se nenhum VOTACAO_CANDIDATO_MUNZONA foi carregado).")
+
+    try:
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_partidos_meta_chave "
+            "ON partidos_meta(ano, uf, cd_cargo, nr_turno, cd_municipio, sg_partido)"
+        )
+    except sqlite3.OperationalError:
+        print("⚠ Tabela 'partidos_meta' ainda não existe. Nenhum índice criado (ok se nenhum VOTACAO_PARTIDO_MUNZONA foi carregado).")
+
+    conn.commit()
+    print("✅ Índices de metadados criados (ou já existiam).")
 
 
 # ========================================
@@ -352,22 +540,28 @@ def create_locais_indexes(conn: sqlite3.Connection):
 def ingest_all(clear_table: bool = True) -> int:
     """
     Lê todos os CSV no volume /app/dados_tse_volume e insere nas tabelas:
-      - 'votos'         (arquivos de candidato/partido, ex: votacao_candidato_munzona_...)
-      - 'locais_secao'  (arquivos DETALHE_VOTACAO_SECAO_...)
+      - 'votos'            (arquivos de seção, ex: votacao_secao_...)
+      - 'locais_secao'     (arquivos DETALHE_VOTACAO_SECAO_...)
+      - 'candidatos_meta'  (arquivos VOTACAO_CANDIDATO_MUNZONA_...)
+      - 'partidos_meta'    (arquivos VOTACAO_PARTIDO_MUNZONA_...)
+
     Se clear_table=True, derruba e recria as tabelas.
     """
-    # timeout maior porque o reload faz operações pesadas (DROP, INSERT em massa, etc.)
     conn = sqlite3.connect(DB_PATH, timeout=60)
     cur = conn.cursor()
 
     if clear_table:
-        print("\n🗑 Limpando tabelas 'votos' e 'locais_secao' (DROP TABLE IF EXISTS)...")
+        print("\n🗑 Limpando tabelas 'votos', 'locais_secao', 'candidatos_meta' e 'partidos_meta' (DROP TABLE IF EXISTS)...")
         cur.execute("DROP TABLE IF EXISTS votos")
         cur.execute("DROP TABLE IF EXISTS locais_secao")
+        cur.execute("DROP TABLE IF EXISTS candidatos_meta")
+        cur.execute("DROP TABLE IF EXISTS partidos_meta")
         conn.commit()
 
     total_votos = 0
     total_locais = 0
+    total_candidatos_meta = 0
+    total_partidos_meta = 0
 
     if not DATA_DIR.exists():
         print(f"❌ Pasta de dados não encontrada: {DATA_DIR}. Pulando.")
@@ -379,37 +573,44 @@ def ingest_all(clear_table: bool = True) -> int:
 
     if not arquivos:
         print("⚠ Nenhum arquivo CSV encontrado no volume.")
-        # Mesmo sem arquivos, ainda chamamos os criadores de índice (que agora são seguros)
-        create_indexes(conn)
-        create_locais_indexes(conn)
         conn.close()
         return 0
 
     for csv_path in arquivos:
         nome_upper = csv_path.name.upper()
 
-        # Arquivos de DETALHE_VOTACAO_SECAO: usamos tanto para votos quanto para locais
+        # 1) Arquivos de DETALHE_VOTACAO_SECAO -> 'locais_secao'
         if "DETALHE_VOTACAO_SECAO" in nome_upper:
-            print(f"\n➡ Processando arquivo DETALHE_VOTACAO_SECAO (votos + locais): {csv_path.name}")
-
-            # 1) VOTOS por seção/candidato
-            df_votos = processar_arquivo_votos(csv_path)
-            if df_votos is not None and not df_votos.empty:
-                df_votos.to_sql("votos", conn, if_exists="append", index=False)
-                total_votos += len(df_votos)
-                print("   ✔ Votos inseridos na tabela 'votos'.")
-
-            # 2) LOCAIS / seções / endereço
+            print(f"\n➡ Processando arquivo de detalhe/seção (locais): {csv_path.name}")
             df_locais = processar_detalhe_secao(csv_path)
             if df_locais is not None and not df_locais.empty:
                 df_locais.to_sql("locais_secao", conn, if_exists="append", index=False)
                 total_locais += len(df_locais)
-                print("   ✔ Locais inseridos na tabela 'locais_secao'.")
-
+                print("   ✔ Inserido na tabela 'locais_secao'.")
             continue
 
-        # Demais arquivos são tratados como arquivos de votos (munzona, partido, etc.)
-        print(f"\n➡ Processando arquivo de votos (candidato/partido): {csv_path.name}")
+        # 2) Arquivos VOTACAO_CANDIDATO_MUNZONA -> 'candidatos_meta'
+        if "VOTACAO_CANDIDATO_MUNZONA" in nome_upper:
+            print(f"\n➡ Processando arquivo de metadados de candidatos: {csv_path.name}")
+            df_cand = processar_candidatos_meta(csv_path)
+            if df_cand is not None and not df_cand.empty:
+                df_cand.to_sql("candidatos_meta", conn, if_exists="append", index=False)
+                total_candidatos_meta += len(df_cand)
+                print("   ✔ Inserido na tabela 'candidatos_meta'.")
+            continue
+
+        # 3) Arquivos VOTACAO_PARTIDO_MUNZONA -> 'partidos_meta'
+        if "VOTACAO_PARTIDO_MUNZONA" in nome_upper:
+            print(f"\n➡ Processando arquivo de metadados de partidos: {csv_path.name}")
+            df_part = processar_partidos_meta(csv_path)
+            if df_part is not None and not df_part.empty:
+                df_part.to_sql("partidos_meta", conn, if_exists="append", index=False)
+                total_partidos_meta += len(df_part)
+                print("   ✔ Inserido na tabela 'partidos_meta'.")
+            continue
+
+        # 4) Demais arquivos com votos (seção/candidato) -> 'votos'
+        print(f"\n➡ Processando arquivo de votos (seção/candidato/partido): {csv_path.name}")
         df_votos = processar_arquivo_votos(csv_path)
         if df_votos is not None and not df_votos.empty:
             df_votos.to_sql("votos", conn, if_exists="append", index=False)
@@ -418,10 +619,13 @@ def ingest_all(clear_table: bool = True) -> int:
 
     print(f"✅ Ingestão concluída. Registros inseridos em 'votos': {total_votos}")
     print(f"✅ Ingestão concluída. Registros inseridos em 'locais_secao': {total_locais}")
+    print(f"✅ Ingestão concluída. Registros inseridos em 'candidatos_meta': {total_candidatos_meta}")
+    print(f"✅ Ingestão concluída. Registros inseridos em 'partidos_meta': {total_partidos_meta}")
 
     # Índices
     create_indexes(conn)
     create_locais_indexes(conn)
+    create_meta_indexes(conn)
 
     conn.close()
     return total_votos

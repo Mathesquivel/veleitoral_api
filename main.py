@@ -35,7 +35,7 @@ class VotoTotal(BaseModel):
     nm_candidato: Optional[str]
     sg_partido: Optional[str]
     total_votos: int
-    ds_sit_tot_turno: Optional[str] = None  # NOVO CAMPO
+    ds_sit_tot_turno: Optional[str] = None  # status eleitoral no turno
 
 
 class VotoZona(BaseModel):
@@ -180,13 +180,18 @@ def criar_indices():
 
 @app.on_event("startup")
 def startup_event():
-    print("\n🚀 Iniciando ingestão...")
-    total = ingest_all(clear_table=True)
-    print(f"✅ Ingestão concluída. Registros inseridos (total em 'votos'): {total}")
-    print("⚙️  Criando índices na tabela 'votos'...")
+    """
+    Com 65 GB de dados NÃO faz sentido reprocessar os CSV toda vez.
+    A partir de agora o startup só cria índices (se possível) e
+    mostra quantos registros já existem.
+
+    Quando quiser recarregar os dados, use explicitamente o endpoint /reload.
+    """
+    print("\n🚀 Iniciando API VELEITORAL (sem reload automático de CSVs)...")
     criar_indices()
-    print("✅ Índices criados (ou já existiam).")
-    print(f"🚀 API pronta. Registros carregados na tabela 'votos': {contar_registros()}")
+    total = contar_registros()
+    print(f"📊 Registros já existentes em 'votos': {total}")
+    print("✅ API pronta para uso.")
 
 
 # =============================
@@ -209,6 +214,8 @@ def reload_dados():
     """
     Reprocessa todos os CSV disponíveis (no volume /app/dados_tse_volume)
     e recria as tabelas.
+
+    ⚠ Cuidado: com 65 GB isso é uma operação pesada.
     """
     total = ingest_all(clear_table=True)
     criar_indices()
@@ -378,11 +385,49 @@ def votos_totais(
     """
     Totais de votos agregados com filtros opcionais.
     Retorna também o campo ds_sit_tot_turno (status eleitoral no turno).
+
+    Usa a tabela 'candidatos_meta' (se existir) para complementar partido e status.
+
+    ⚠ Para evitar consultas gigantes, é obrigatório informar pelo menos UM
+      destes filtros: ano, uf, cd_municipio, cd_cargo, nr_candidato, sg_partido.
     """
+    if not any([ano, uf, cd_municipio, cd_cargo, nr_candidato, sg_partido]):
+        raise HTTPException(
+            status_code=400,
+            detail="Envie pelo menos um filtro entre: ano, uf, cd_municipio, cd_cargo, nr_candidato ou sg_partido.",
+        )
+
     conn = get_conn()
     cur = conn.cursor()
 
-    sql = """
+    params: List = []
+
+    # Versão com JOIN em candidatos_meta (se a tabela existir)
+    sql_join = """
+        SELECT
+            v.ano,
+            v.uf,
+            v.cd_municipio,
+            COALESCE(v.nm_municipio, 'Estadual') AS nm_municipio,
+            v.cd_cargo,
+            v.ds_cargo,
+            v.nr_candidato,
+            COALESCE(v.nm_candidato, cm.nm_candidato, 'LEGENDA') AS nm_candidato,
+            COALESCE(v.sg_partido, cm.sg_partido) AS sg_partido,
+            COALESCE(v.ds_sit_tot_turno, cm.ds_sit_tot_turno) AS ds_sit_tot_turno,
+            SUM(v.votos) AS total_votos
+        FROM votos v
+        LEFT JOIN candidatos_meta cm
+          ON cm.ano = v.ano
+         AND cm.uf = v.uf
+         AND cm.cd_cargo = v.cd_cargo
+         AND cm.nr_turno = v.nr_turno
+         AND cm.nr_candidato = v.nr_candidato
+        WHERE 1=1
+    """
+
+    # Versão fallback (sem JOIN), caso a tabela candidatos_meta ainda não exista
+    sql_sem_join = """
         SELECT
             ano,
             uf,
@@ -398,40 +443,52 @@ def votos_totais(
         FROM votos
         WHERE 1=1
     """
-    params: List = []
 
+    # Construímos o trecho de filtros (é igual para as duas consultas)
+    filtros = ""
     if ano:
-        sql += " AND ano = ?"
+        filtros += " AND v.ano = ?" if "FROM votos v" in sql_join else " AND ano = ?"
         params.append(ano)
     if uf:
-        sql += " AND uf = ?"
+        filtros += " AND v.uf = ?" if "FROM votos v" in sql_join else " AND uf = ?"
         params.append(uf)
     if nr_turno:
-        sql += " AND nr_turno = ?"
+        filtros += " AND v.nr_turno = ?" if "FROM votos v" in sql_join else " AND nr_turno = ?"
         params.append(nr_turno)
     if cd_municipio:
-        sql += " AND cd_municipio = ?"
+        filtros += " AND v.cd_municipio = ?" if "FROM votos v" in sql_join else " AND cd_municipio = ?"
         params.append(cd_municipio)
     if cd_cargo:
-        sql += " AND cd_cargo = ?"
+        filtros += " AND v.cd_cargo = ?" if "FROM votos v" in sql_join else " AND cd_cargo = ?"
         params.append(cd_cargo)
     if nr_zona:
-        sql += " AND nr_zona = ?"
+        filtros += " AND v.nr_zona = ?" if "FROM votos v" in sql_join else " AND nr_zona = ?"
         params.append(nr_zona)
     if nr_secao:
-        sql += " AND nr_secao = ?"
+        filtros += " AND v.nr_secao = ?" if "FROM votos v" in sql_join else " AND nr_secao = ?"
         params.append(nr_secao)
     if nr_candidato:
-        sql += " AND nr_candidato = ?"
+        filtros += " AND v.nr_candidato = ?" if "FROM votos v" in sql_join else " AND nr_candidato = ?"
         params.append(nr_candidato)
     if sg_partido:
-        sql += " AND sg_partido = ?"
+        filtros += " AND v.sg_partido = ?" if "FROM votos v" in sql_join else " AND sg_partido = ?"
         params.append(sg_partido)
     if tp_voto:
-        sql += " AND tp_voto = ?"
+        filtros += " AND v.tp_voto = ?" if "FROM votos v" in sql_join else " AND tp_voto = ?"
         params.append(tp_voto)
 
-    sql += """
+    # Completa as duas queries
+    sql_join += filtros + """
+        GROUP BY
+            v.ano, v.uf,
+            v.cd_municipio, v.nm_municipio,
+            v.cd_cargo, v.ds_cargo,
+            v.nr_candidato, v.nm_candidato,
+            v.sg_partido, v.ds_sit_tot_turno
+        ORDER BY total_votos DESC
+        LIMIT ?
+    """
+    sql_sem_join += filtros.replace("v.", "") + """
         GROUP BY ano, uf,
                  cd_municipio, nm_municipio,
                  cd_cargo, ds_cargo,
@@ -440,10 +497,23 @@ def votos_totais(
         ORDER BY total_votos DESC
         LIMIT ?
     """
-    params.append(limite)
+    params_with_limit = params + [limite]
 
-    cur.execute(sql, params)
-    rows = cur.fetchall()
+    rows = []
+    try:
+        # Tenta a versão com JOIN em candidatos_meta
+        cur.execute(sql_join, params_with_limit)
+        rows = cur.fetchall()
+    except sqlite3.OperationalError as e:
+        # Se a tabela candidatos_meta ainda não existe, cai para a versão antiga
+        if "no such table: candidatos_meta" in str(e):
+            print("⚠ Tabela 'candidatos_meta' não existe. Usando consulta sem JOIN (comportamento antigo).")
+            cur.execute(sql_sem_join, params_with_limit)
+            rows = cur.fetchall()
+        else:
+            conn.close()
+            raise
+
     conn.close()
     return [VotoTotal(**dict(r)) for r in rows]
 
@@ -463,7 +533,15 @@ def votos_por_zona(
 ):
     """
     Retorna votos agregados por zona/seção, com todos os campos de contexto.
+
+    ⚠ Obrigatório informar pelo menos ano ou uf, para evitar consultas gigantes.
     """
+    if not any([ano, uf]):
+        raise HTTPException(
+            status_code=400,
+            detail="Envie pelo menos ano ou uf para consultar /votos/zona.",
+        )
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -551,17 +629,18 @@ def votos_por_zona(
 
 @app.get("/mapa/locais", response_model=List[LocalMapaCandidato])
 def mapa_locais_por_escola(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    cd_municipio: Optional[str] = None,
-    nr_turno: Optional[str] = None,
-    cd_cargo: Optional[str] = None,
+    ano: str = Query(...),
+    uf: str = Query(...),
+    cd_municipio: str = Query(...),
+    nr_turno: str = Query(...),
+    cd_cargo: str = Query(...),
+    nr_candidato: Optional[str] = None,
     nr_zona: Optional[str] = None,
     nr_secao: Optional[str] = None,
     cd_local_votacao: Optional[str] = None,
-    nr_candidato: Optional[str] = None,
     sg_partido: Optional[str] = None,
-    limite: int = Query(default=2000, ge=1, le=10000),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(1000, ge=1, le=5000),
 ):
     """
     Cada registro representa um LOCAL DE VOTAÇÃO (escola) onde o candidato/partido teve votos.
@@ -572,7 +651,12 @@ def mapa_locais_por_escola(
       - nr_secao          -> para listar as seções desse local
 
     O campo 'total_votos' é o total de votos do candidato naquele LOCAL (somando as seções do local).
+
+    ⚠ Filtros obrigatórios: ano, uf, cd_municipio, nr_turno, cd_cargo.
+    Recomenda-se sempre informar também nr_candidato.
     """
+    offset = (page - 1) * page_size
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -597,25 +681,18 @@ def mapa_locais_por_escola(
                 SUM(votos) AS total_votos
             FROM votos
             WHERE 1=1
+              AND ano = ?
+              AND uf = ?
+              AND cd_municipio = ?
+              AND nr_turno = ?
+              AND cd_cargo = ?
     """
-    params: List = []
+    params: List = [ano, uf, cd_municipio, nr_turno, cd_cargo]
 
-    # Filtros na tabela de votos
-    if ano:
-        sql += " AND ano = ?"
-        params.append(ano)
-    if uf:
-        sql += " AND uf = ?"
-        params.append(uf)
-    if cd_municipio:
-        sql += " AND cd_municipio = ?"
-        params.append(cd_municipio)
-    if nr_turno:
-        sql += " AND nr_turno = ?"
-        params.append(nr_turno)
-    if cd_cargo:
-        sql += " AND cd_cargo = ?"
-        params.append(cd_cargo)
+    # Filtros adicionais na tabela de votos
+    if nr_candidato:
+        sql += " AND nr_candidato = ?"
+        params.append(nr_candidato)
     if nr_zona:
         sql += " AND nr_zona = ?"
         params.append(nr_zona)
@@ -625,9 +702,6 @@ def mapa_locais_por_escola(
     if cd_local_votacao:
         sql += " AND cd_local_votacao = ?"
         params.append(cd_local_votacao)
-    if nr_candidato:
-        sql += " AND nr_candidato = ?"
-        params.append(nr_candidato)
     if sg_partido:
         sql += " AND sg_partido = ?"
         params.append(sg_partido)
@@ -666,9 +740,9 @@ def mapa_locais_por_escola(
             secoes_csv
         FROM votos_local
         ORDER BY total_votos DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
     """
-    params.append(limite)
+    params.extend([page_size, offset])
 
     cur.execute(sql, params)
     rows = cur.fetchall()
@@ -695,6 +769,15 @@ def votos_por_municipio(
     uf: Optional[str] = None,
     limite: int = Query(default=100, ge=1, le=5000),
 ):
+    """
+    ⚠ Obrigatório informar pelo menos ano ou uf.
+    """
+    if not any([ano, uf]):
+        raise HTTPException(
+            status_code=400,
+            detail="Envie pelo menos ano ou uf para consultar /votos/municipio.",
+        )
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -739,6 +822,15 @@ def votos_por_cargo(
     cd_cargo: Optional[str] = None,
     limite: int = Query(default=100, ge=1, le=5000),
 ):
+    """
+    ⚠ Obrigatório informar pelo menos ano ou uf.
+    """
+    if not any([ano, uf]):
+        raise HTTPException(
+            status_code=400,
+            detail="Envie pelo menos ano ou uf para consultar /votos/cargo.",
+        )
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -785,6 +877,15 @@ def listar_candidatos(
     uf: Optional[str] = None,
     limite: int = Query(default=100, ge=1, le=5000),
 ):
+    """
+    ⚠ Obrigatório informar pelo menos ano ou uf.
+    """
+    if not any([ano, uf]):
+        raise HTTPException(
+            status_code=400,
+            detail="Envie pelo menos ano ou uf para consultar /candidatos.",
+        )
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -829,8 +930,15 @@ def listar_partidos(
 ):
     """
     Lista partidos com total de votos, e anos/UFs em que aparecem.
-    Usado pelo Lovable para dropdowns e rankings.
+
+    ⚠ Obrigatório informar pelo menos ano ou uf.
     """
+    if not any([ano, uf]):
+        raise HTTPException(
+            status_code=400,
+            detail="Envie pelo menos ano ou uf para consultar /partidos.",
+        )
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -887,6 +995,15 @@ def ranking_partidos(
     uf: Optional[str] = None,
     limite: int = Query(default=50, ge=1, le=1000),
 ):
+    """
+    ⚠ Obrigatório informar pelo menos ano ou uf.
+    """
+    if not any([ano, uf]):
+        raise HTTPException(
+            status_code=400,
+            detail="Envie pelo menos ano ou uf para consultar /ranking/partidos.",
+        )
+
     conn = get_conn()
     cur = conn.cursor()
 
