@@ -10,9 +10,12 @@ import re
 BASE_DIR = Path(__file__).parent
 
 # A ingestão lê APENAS do volume do Railway
-DATA_DIR = Path("/app/dados_tse_volume")
+from pathlib import Path
 
-DB_PATH = BASE_DIR / "tse_eleicoes.db"
+# Banco dentro do volume da Railway (persiste junto com os CSVs)
+DB_PATH = Path("/app/dados_tse_volume") / "tse_eleicoes.db"
+
+BASE_DIR = Path(__file__).parent  # pode manter se usar para outras coisas
 
 SEP = ";"
 ENCODING = "latin1"
