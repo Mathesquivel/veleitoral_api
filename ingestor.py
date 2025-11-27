@@ -7,15 +7,14 @@ import re
 # CONFIGURAÇÃO
 # ==============================
 
+# Pasta base do código
 BASE_DIR = Path(__file__).parent
 
-# A ingestão lê APENAS do volume do Railway
-from pathlib import Path
+# Pasta do VOLUME da Railway onde ficam TODOS os CSVs
+DATA_DIR = Path("/app/dados_tse_volume")
 
-# Banco dentro do volume da Railway (persiste junto com os CSVs)
-DB_PATH = Path("/app/dados_tse_volume") / "tse_eleicoes.db"
-
-BASE_DIR = Path(__file__).parent  # pode manter se usar para outras coisas
+# Banco de dados SQLite dentro do volume (persiste entre deploys)
+DB_PATH = DATA_DIR / "tse_eleicoes.db"
 
 SEP = ";"
 ENCODING = "latin1"
@@ -546,6 +545,9 @@ def ingest_all(clear_table: bool = True) -> int:
 
     Se clear_table=True, derruba e recria as tabelas.
     """
+    # Garante que a pasta do volume existe
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
     conn = sqlite3.connect(DB_PATH, timeout=60)
     cur = conn.cursor()
 
