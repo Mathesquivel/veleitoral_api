@@ -10,15 +10,13 @@ Base = declarative_base()
 # ==============================
 
 # Fallback para DESENVOLVIMENTO LOCAL
-# (a URL que você já usava antes, pode continuar igual)
 LOCAL_DEV_DATABASE_URL = (
     "postgresql+psycopg2://"
     "postgres:BuRgLylYmpoIqfDgswmNPvKcFymkSffj"
     "@hopper.proxy.rlwy.net:32045/railway"
 )
 
-# Em produção (Railway), vamos tentar pegar das variáveis de ambiente.
-# Em local, se essas variáveis não existirem, usamos o fallback acima.
+# Em produção (Railway) tentamos pegar das variáveis de ambiente
 DATABASE_URL = (
     os.getenv("DATABASE_URL")
     or os.getenv("URL_PÚBLICA_DO_BANCO_DE_DADOS")
@@ -28,7 +26,8 @@ DATABASE_URL = (
 if not DATABASE_URL:
     raise RuntimeError(
         "❌ Nenhuma DATABASE_URL encontrada. "
-        "Defina DATABASE_URL/URL_PÚBLICA_DO_BANCO_DE_DADOS ou ajuste LOCAL_DEV_DATABASE_URL."
+        "Defina DATABASE_URL/URL_PÚBLICA_DO_BANCO_DE_DADOS "
+        "ou ajuste LOCAL_DEV_DATABASE_URL."
     )
 
 # ==============================

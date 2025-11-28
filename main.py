@@ -1,1566 +1,553 @@
-# main.py — API FastAPI da VELEITORAL totalmente revisado
-
-from fastapi import FastAPI, Query, UploadFile, File, HTTPException
-from pydantic import BaseModel
+# main.py
+from fastapi import (
+    FastAPI,
+    Query,
+    UploadFile,
+    File,
+    HTTPException,
+    Depends,
+)
 from typing import Optional, List
 from pathlib import Path
-import sqlite3
 import os
 import zipfile
 import shutil
 
-from ingestor import ingest_all, DB_PATH
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+
+from database import get_db
+from ingestor import (
+    ingest_votacao_secao,
+    ingest_detalhe_munzona,
+    ingest_all,
+    clear_all_data,
+    DATA_DIR,
+    init_db,
+)
+from models import VotoSecao, ResumoMunZona
+from schemas import (
+    VotoTotalOut,
+    VotoZonaOut,
+    VotoMunicipioOut,
+    VotoCargoOut,
+    PartidoOut,
+    RankingPartidosOut,
+    EstatisticasOut,
+    UploadResponse,
+)
 
 app = FastAPI(title="API TSE - VELEITORAL")
 
-# Pasta do Railway onde ficam os CSV
-UPLOAD_DIR = "/app/dados_tse_volume"
+UPLOAD_DIR = DATA_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-BASE_DIR = Path(__file__).parent
 
-# -----------------------------------------------------------------------------
-# MODELOS BASE
-# -----------------------------------------------------------------------------
-
-class VotoTotal(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    cd_municipio: Optional[str] = None
-    nm_municipio: Optional[str] = None
-    cd_cargo: Optional[str] = None
-    ds_cargo: Optional[str]
-    nr_candidato: Optional[str]
-    nm_candidato: Optional[str]
-    sg_partido: Optional[str]
-    total_votos: int
-    ds_sit_tot_turno: Optional[str] = None
-
-
-class VotoZona(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    nr_turno: Optional[str]
-    cd_municipio: Optional[str]
-    nm_municipio: Optional[str]
-    cd_cargo: Optional[str]
-    ds_cargo: Optional[str]
-    nm_candidato: Optional[str]
-    nr_candidato: Optional[str]
-    sg_partido: Optional[str]
-    nr_zona: Optional[str]
-    nr_secao: Optional[str]
-    cd_local_votacao: Optional[str]
-    nm_local_votacao: Optional[str]
-    votos: int
-
-
-class VotoMunicipio(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    cd_municipio: Optional[str]
-    nm_municipio: Optional[str]
-    nm_candidato: Optional[str]
-    sg_partido: Optional[str]
-    votos: int
-
-
-class VotoCargo(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    cd_cargo: Optional[str]
-    ds_cargo: Optional[str]
-    nm_candidato: Optional[str]
-    sg_partido: Optional[str]
-    votos: int
-
-
-class CandidatoInfo(BaseModel):
-    nm_candidato: Optional[str]
-    sg_partido: Optional[str]
-    nr_candidato: Optional[str]
-    ano: Optional[str]
-    uf: Optional[str]
-    total_votos: int
-
-
-class PartidoInfo(BaseModel):
-    sg_partido: Optional[str]
-    total_votos: int
-    anos: List[str]
-    ufs: List[str]
-
-
-class RankingPartido(BaseModel):
-    sg_partido: Optional[str]
-    total_votos: int
-
-
-class Estatisticas(BaseModel):
-    total_registros: int
-    total_votos: int
-    total_candidatos: int
-    total_partidos: int
-    anos_disponiveis: List[str]
-    ufs_disponiveis: List[str]
-
-
-class LocalMapaCandidato(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    nr_turno: Optional[str]
-    cd_municipio: Optional[str]
-    nm_municipio: Optional[str]
-    nr_zona: Optional[str]
-    cd_local_votacao: Optional[str]
-    nm_local_votacao: Optional[str]
-    endereco: Optional[str]
-    nr_candidato: Optional[str]
-    nm_candidato: Optional[str]
-    sg_partido: Optional[str]
-    total_votos: int
-    secoes: List[str]
-
-
-# -----------------------------------------------------------------------------
-# MODELOS NOVOS – RANKING E MAPA DETALHADO
-# -----------------------------------------------------------------------------
-
-class CandidatoRankingMunicipio(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    cd_municipio: Optional[str]
-    nm_municipio: Optional[str]
-    cd_cargo: Optional[str]
-    ds_cargo: Optional[str]
-    nr_turno: Optional[str]
-    nr_candidato: Optional[str]
-    nm_candidato: Optional[str]
-    sg_partido: Optional[str]
-    nm_partido: Optional[str]
-    ds_sit_tot_turno: Optional[str]
-    total_votos: int
-
-
-class PartidoRankingMunicipio(BaseModel):
-    ano: Optional[str]
-    uf: Optional[str]
-    cd_municipio: Optional[str]
-    nm_municipio: Optional[str]
-    cd_cargo: Optional[str]
-    ds_cargo: Optional[str]
-    nr_turno: Optional[str]
-    sg_partido: Optional[str]
-    nm_partido: Optional[str]
-    total_votos: int
-
-
-class CandidatoSugestaoMapa(BaseModel):
-    nr_candidato: Optional[str]
-    nm_candidato: Optional[str]
-    sg_partido: Optional[str]
-
-
-class ResumoMapaCandidato(BaseModel):
-    nr_candidato: Optional[str]
-    nm_candidato: Optional[str]
-    sg_partido: Optional[str]
-    nm_partido: Optional[str]
-    ds_sit_tot_turno: Optional[str]
-    total_votos_municipio: int
-
-
-class LocalMapaCandidatoDetalhe(BaseModel):
-    nr_zona: Optional[str]
-    nr_secao: Optional[str]
-    cd_local_votacao: Optional[str]
-    nm_local_votacao: Optional[str]
-    endereco: Optional[str]
-    votos: int
-
-
-class MapaCandidatoResponse(BaseModel):
-    candidato: ResumoMapaCandidato
-    locais: List[LocalMapaCandidatoDetalhe]
-
-
-class ResumoMapaPartido(BaseModel):
-    sg_partido: Optional[str]
-    nm_partido: Optional[str]
-    total_votos_municipio: int
-
-
-class LocalMapaPartidoDetalhe(BaseModel):
-    nr_zona: Optional[str]
-    nr_secao: Optional[str]
-    cd_local_votacao: Optional[str]
-    nm_local_votacao: Optional[str]
-    endereco: Optional[str]
-    votos: int
-
-
-class MapaPartidoResponse(BaseModel):
-    partido: ResumoMapaPartido
-    locais: List[LocalMapaPartidoDetalhe]
-
-
-# -----------------------------------------------------------------------------
-# FUNÇÕES DE BANCO
-# -----------------------------------------------------------------------------
-
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def contar_registros() -> int:
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) AS c FROM votos")
-        r = cur.fetchone()
-        return r["c"] if r else 0
-    except Exception:
-        return 0
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-
-def criar_indices():
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_v_1 ON votos(ano, uf)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_v_2 ON votos(ano, uf, cd_cargo)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_v_3 ON votos(ano, uf, cd_municipio)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_v_4 ON votos(ano, uf, cd_municipio, cd_cargo)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_v_5 ON votos(ano, uf, cd_municipio, cd_cargo, nr_turno)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_v_6 ON votos(ano, uf, cd_municipio, cd_cargo, nr_turno, nr_candidato)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_v_7 ON votos(ano, uf, cd_municipio, cd_cargo, nr_turno, sg_partido)")
-        conn.commit()
-    except Exception:
-        pass
-    finally:
-        conn.close()
-
-
-# -----------------------------------------------------------------------------
+# =============================
 # STARTUP
-# -----------------------------------------------------------------------------
+# =============================
 
 @app.on_event("startup")
-def startup():
-    print("🚀 API VELEITORAL iniciando...")
-    criar_indices()
-    print(f"📊 Registros atuais na tabela votos: {contar_registros()}")
-    print("✅ API pronta.\n")
+def on_startup():
+    init_db()
 
 
-# -----------------------------------------------------------------------------
-# ENDPOINTS BÁSICOS / ADMIN
-# -----------------------------------------------------------------------------
+# =============================
+# ESTATÍSTICAS
+# =============================
 
-@app.get("/")
-def root():
-    return {
-        "status": "ok",
-        "mensagem": "API TSE VELEITORAL rodando.",
-        "registros_votos": contar_registros(),
-        "banco": str(DB_PATH),
-    }
+@app.get("/estatisticas", response_model=EstatisticasOut)
+def estatisticas(db: Session = Depends(get_db)):
+    total_secao = db.query(func.count(VotoSecao.id)).scalar() or 0
+    total_mz = db.query(func.count(ResumoMunZona.id)).scalar() or 0
+
+    anos_vsec = db.query(VotoSecao.ano).distinct()
+    anos_mz = db.query(ResumoMunZona.ano).distinct()
+
+    anos = sorted({a[0] for a in anos_vsec if a[0]} | {a[0] for a in anos_mz if a[0]})
+
+    return EstatisticasOut(
+        total_linhas_votos_secao=total_secao,
+        total_linhas_resumo_munzona=total_mz,
+        anos_disponiveis=anos,
+    )
 
 
-@app.post("/reload")
-def reload_dados():
-    total = ingest_all(clear_table=True)
-    criar_indices()
-    return {
-        "status": "ok",
-        "mensagem": "Recarregado com sucesso.",
-        "registros_votos": total,
-    }
+# =============================
+# VOTOS / AGREGAÇÕES
+# =============================
+
+@app.get("/votos/totais", response_model=List[VotoTotalOut])
+def votos_totais(
+    ano: Optional[str] = Query(None),
+    uf: Optional[str] = Query(None),
+    cd_municipio: Optional[str] = Query(None),
+    ds_cargo: Optional[str] = Query(None),
+    nr_candidato: Optional[str] = Query(None, description="Número do votável"),
+    sg_partido: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """
+    Votos agregados por candidato (a partir de VotoSecao).
+    """
+    q = db.query(
+        VotoSecao.ano.label("ano"),
+        VotoSecao.uf.label("uf"),
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.ds_cargo,
+        VotoSecao.nr_votavel.label("nr_candidato"),
+        VotoSecao.nm_votavel.label("nm_candidato"),
+        VotoSecao.sg_partido,
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    )
+
+    if ano:
+        q = q.filter(VotoSecao.ano == ano)
+    if uf:
+        q = q.filter(VotoSecao.uf == uf)
+    if cd_municipio:
+        q = q.filter(VotoSecao.cd_municipio == cd_municipio)
+    if ds_cargo:
+        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
+    if nr_candidato:
+        q = q.filter(VotoSecao.nr_votavel == nr_candidato)
+    if sg_partido:
+        q = q.filter(VotoSecao.sg_partido == sg_partido)
+
+    q = q.group_by(
+        VotoSecao.ano,
+        VotoSecao.uf,
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.ds_cargo,
+        VotoSecao.nr_votavel,
+        VotoSecao.nm_votavel,
+        VotoSecao.sg_partido,
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
+
+    rows = q.all()
+
+    return [
+        VotoTotalOut(
+            ano=r.ano,
+            uf=r.uf,
+            cd_municipio=r.cd_municipio,
+            nm_municipio=r.nm_municipio,
+            ds_cargo=r.ds_cargo,
+            nr_candidato=r.nr_candidato,
+            nm_candidato=r.nm_candidato,
+            sg_partido=r.sg_partido,
+            total_votos=r.total_votos,
+        )
+        for r in rows
+    ]
+
+
+@app.get("/votos/zona", response_model=List[VotoZonaOut])
+def votos_por_zona(
+    ano: Optional[str] = Query(None),
+    uf: Optional[str] = Query(None),
+    cd_municipio: Optional[str] = Query(None),
+    nr_zona: Optional[str] = Query(None),
+    ds_cargo: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """
+    Votos por ZONA, agrupando dados de VotoSecao.
+    """
+    q = db.query(
+        VotoSecao.ano.label("ano"),
+        VotoSecao.uf.label("uf"),
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.nr_zona,
+        VotoSecao.ds_cargo,
+        VotoSecao.nr_votavel.label("nr_candidato"),
+        VotoSecao.nm_votavel.label("nm_candidato"),
+        VotoSecao.sg_partido,
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    )
+
+    if ano:
+        q = q.filter(VotoSecao.ano == ano)
+    if uf:
+        q = q.filter(VotoSecao.uf == uf)
+    if cd_municipio:
+        q = q.filter(VotoSecao.cd_municipio == cd_municipio)
+    if nr_zona:
+        q = q.filter(VotoSecao.nr_zona == nr_zona)
+    if ds_cargo:
+        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
+
+    q = q.group_by(
+        VotoSecao.ano,
+        VotoSecao.uf,
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.nr_zona,
+        VotoSecao.ds_cargo,
+        VotoSecao.nr_votavel,
+        VotoSecao.nm_votavel,
+        VotoSecao.sg_partido,
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
+
+    rows = q.all()
+
+    return [
+        VotoZonaOut(
+            ano=r.ano,
+            uf=r.uf,
+            cd_municipio=r.cd_municipio,
+            nm_municipio=r.nm_municipio,
+            nr_zona=r.nr_zona,
+            ds_cargo=r.ds_cargo,
+            nr_candidato=r.nr_candidato,
+            nm_candidato=r.nm_candidato,
+            sg_partido=r.sg_partido,
+            total_votos=r.total_votos,
+        )
+        for r in rows
+    ]
+
+
+@app.get("/votos/municipio", response_model=List[VotoMunicipioOut])
+def votos_por_municipio(
+    ano: Optional[str] = Query(None),
+    uf: Optional[str] = Query(None),
+    ds_cargo: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """
+    Votos agregados por MUNICÍPIO (a partir de VotoSecao).
+    """
+    q = db.query(
+        VotoSecao.ano,
+        VotoSecao.uf,
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.ds_cargo,
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    )
+
+    if ano:
+        q = q.filter(VotoSecao.ano == ano)
+    if uf:
+        q = q.filter(VotoSecao.uf == uf)
+    if ds_cargo:
+        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
+
+    q = q.group_by(
+        VotoSecao.ano,
+        VotoSecao.uf,
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.ds_cargo,
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
+
+    rows = q.all()
+
+    return [
+        VotoMunicipioOut(
+            ano=r.ano,
+            uf=r.uf,
+            cd_municipio=r.cd_municipio,
+            nm_municipio=r.nm_municipio,
+            ds_cargo=r.ds_cargo,
+            total_votos=r.total_votos,
+        )
+        for r in rows
+    ]
+
+
+@app.get("/votos/cargo", response_model=List[VotoCargoOut])
+def votos_por_cargo(
+    ano: Optional[str] = Query(None),
+    uf: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Votos agregados por CARGO (VotoSecao).
+    """
+    q = db.query(
+        VotoSecao.ano,
+        VotoSecao.ds_cargo,
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    )
+
+    if ano:
+        q = q.filter(VotoSecao.ano == ano)
+    if uf:
+        q = q.filter(VotoSecao.uf == uf)
+
+    q = q.group_by(
+        VotoSecao.ano,
+        VotoSecao.ds_cargo,
+    ).order_by(func.sum(VotoSecao.qt_votos).desc())
+
+    rows = q.all()
+
+    return [
+        VotoCargoOut(
+            ano=r.ano,
+            ds_cargo=r.ds_cargo,
+            total_votos=r.total_votos,
+        )
+        for r in rows
+    ]
+
+
+# =============================
+# CANDIDATOS / PARTIDOS
+# =============================
+
+@app.get("/candidatos", response_model=List[VotoTotalOut])
+def candidatos(
+    ano: Optional[str] = Query(None),
+    uf: Optional[str] = Query(None),
+    ds_cargo: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """
+    Lista candidatos (NR_VOTAVEL) com total de votos.
+    """
+    q = db.query(
+        VotoSecao.ano.label("ano"),
+        VotoSecao.uf.label("uf"),
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.ds_cargo,
+        VotoSecao.nr_votavel.label("nr_candidato"),
+        VotoSecao.nm_votavel.label("nm_candidato"),
+        VotoSecao.sg_partido,
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    )
+
+    if ano:
+        q = q.filter(VotoSecao.ano == ano)
+    if uf:
+        q = q.filter(VotoSecao.uf == uf)
+    if ds_cargo:
+        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
+
+    q = q.group_by(
+        VotoSecao.ano,
+        VotoSecao.uf,
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.ds_cargo,
+        VotoSecao.nr_votavel,
+        VotoSecao.nm_votavel,
+        VotoSecao.sg_partido,
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
+
+    rows = q.all()
+
+    return [
+        VotoTotalOut(
+            ano=r.ano,
+            uf=r.uf,
+            cd_municipio=r.cd_municipio,
+            nm_municipio=r.nm_municipio,
+            ds_cargo=r.ds_cargo,
+            nr_candidato=r.nr_candidato,
+            nm_candidato=r.nm_candidato,
+            sg_partido=r.sg_partido,
+            total_votos=r.total_votos,
+        )
+        for r in rows
+    ]
+
+
+@app.get("/partidos", response_model=List[PartidoOut])
+def partidos(
+    ano: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Total de votos por partido (a partir de VotoSecao).
+    """
+    q = db.query(
+        VotoSecao.sg_partido,
+        VotoSecao.ano,
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    ).filter(VotoSecao.sg_partido.isnot(None))
+
+    if ano:
+        q = q.filter(VotoSecao.ano == ano)
+
+    q = q.group_by(
+        VotoSecao.sg_partido,
+        VotoSecao.ano,
+    ).order_by(func.sum(VotoSecao.qt_votos).desc())
+
+    rows = q.all()
+
+    return [
+        PartidoOut(
+            sg_partido=r.sg_partido,
+            ano=r.ano,
+            total_votos=r.total_votos,
+        )
+        for r in rows
+    ]
+
+
+@app.get("/ranking/partidos", response_model=List[RankingPartidosOut])
+def ranking_partidos(
+    ano: Optional[str] = Query(None),
+    limit: int = Query(30, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """
+    Ranking de partidos por votos totais (VotoSecao).
+    """
+    q = db.query(
+        VotoSecao.sg_partido,
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    ).filter(VotoSecao.sg_partido.isnot(None))
+
+    if ano:
+        q = q.filter(VotoSecao.ano == ano)
+
+    q = q.group_by(
+        VotoSecao.sg_partido,
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
+
+    rows = q.all()
+
+    return [
+        RankingPartidosOut(
+            sg_partido=r.sg_partido,
+            total_votos=r.total_votos,
+        )
+        for r in rows
+    ]
+
+
+# =============================
+# UPLOAD / RELOAD
+# =============================
+
+@app.post("/upload", response_model=UploadResponse)
+async def upload_csv(
+    tipo: str = Query(
+        ...,
+        pattern="^(secao|munzona|generico|resumo)$",
+        description="Tipo de arquivo: secao ou munzona (generico/resumo tratam como munzona)",
+    ),
+    file: UploadFile = File(...),
+):
+    """
+    Faz upload de UM CSV e ingere:
+      - tipo=secao  -> VOTACAO_SECAO -> tabela votos_secao
+      - tipo=munzona/generico/resumo -> DETALHE_VOTACAO_MUNZONA -> tabela resumo_munzona
+    """
+    filename = file.filename
+
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Envie um arquivo .csv")
+
+    dest_path = Path(UPLOAD_DIR) / filename
+    with dest_path.open("wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    try:
+        if tipo == "secao":
+            linhas = ingest_votacao_secao(dest_path)
+        else:
+            linhas = ingest_detalhe_munzona(dest_path)
+    except Exception as e:
+        dest_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao processar CSV: {str(e)}")
+
+    return UploadResponse(
+        mensagem=f"Arquivo {filename} importado com sucesso",
+        linhas_importadas=linhas,
+    )
+
+
+@app.post("/upload-zip", response_model=UploadResponse)
+async def upload_zip(file: UploadFile = File(...)):
+    """
+    Upload de um ZIP com vários CSVs.
+    - Arquivos com 'SECAO' no nome -> VOTACAO_SECAO
+    - Arquivos com 'MUNZONA' no nome -> DETALHE_VOTACAO_MUNZONA
+    """
+    filename = file.filename
+
+    if not filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Envie um arquivo .zip")
+
+    zip_path = Path(UPLOAD_DIR) / filename
+    with zip_path.open("wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    extracted_dir = Path(UPLOAD_DIR) / (filename + "_unzipped")
+    if extracted_dir.exists():
+        shutil.rmtree(extracted_dir)
+    extracted_dir.mkdir(parents=True, exist_ok=True)
+
+    total_linhas = 0
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extracted_dir)
+
+        for path in extracted_dir.rglob("*.csv"):
+            name_upper = path.name.upper()
+            if "SECAO" in name_upper:
+                total_linhas += ingest_votacao_secao(path)
+            elif "MUNZONA" in name_upper:
+                total_linhas += ingest_detalhe_munzona(path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao processar ZIP: {str(e)}")
+    finally:
+        zip_path.unlink(missing_ok=True)
+        shutil.rmtree(extracted_dir, ignore_errors=True)
+
+    return UploadResponse(
+        mensagem=f"ZIP {filename} importado com sucesso",
+        linhas_importadas=total_linhas,
+    )
+
+
+@app.post("/reload", response_model=UploadResponse)
+def reload_arquivos_existentes():
+    """
+    Reingere TODOS os CSVs que já estão em /app/dados_tse_volume (ou ./dados_tse em dev).
+    """
+    try:
+        total = ingest_all()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro no reload: {str(e)}")
+
+    return UploadResponse(
+        mensagem="Reload concluído com sucesso",
+        linhas_importadas=total,
+    )
 
 
 @app.post("/clear-volume")
 def clear_volume():
-    dir_path = Path(UPLOAD_DIR)
-    arquivos = list(dir_path.glob("*"))
-    removidos = 0
-
-    for arq in arquivos:
-        try:
-            arq.unlink()
-            removidos += 1
-        except Exception as e:
-            print(f"⚠ Erro ao remover {arq}: {e}")
-
-    return {
-        "status": "ok",
-        "mensagem": f"{removidos} arquivo(s) removido(s) do volume.",
-    }
-
-
-CHUNK_SIZE = 1024 * 1024  # 1 MB
-
-
-@app.post("/upload")
-async def upload_csv(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Envie apenas arquivos .csv")
-
-    destino = Path(UPLOAD_DIR) / file.filename
-    tamanho_bytes = 0
-
-    try:
-        with open(destino, "wb") as f:
-            while True:
-                chunk = await file.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                tamanho_bytes += len(chunk)
-                f.write(chunk)
-    except Exception as e:
-        if destino.exists():
-            destino.unlink()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao salvar arquivo no volume: {e}",
-        )
-
-    tamanho_mb = tamanho_bytes / (1024 * 1024)
-    return {
-        "status": "ok",
-        "mensagem": (
-            f"Arquivo {file.filename} (≈ {tamanho_mb:.2f} MB) salvo em {destino}. "
-            "Agora você pode chamar /reload para processar junto com os demais CSV."
-        ),
-        "arquivo": file.filename,
-        "caminho": str(destino),
-        "tamanho_mb": round(tamanho_mb, 2),
-    }
-
-
-@app.post("/upload-zip")
-async def upload_zip(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".zip"):
-        raise HTTPException(
-            status_code=400,
-            detail="Envie um arquivo .zip contendo os CSV.",
-        )
-
-    zip_path = Path(UPLOAD_DIR) / file.filename
-    tamanho_bytes = 0
-
-    try:
-        with open(zip_path, "wb") as f:
-            while True:
-                chunk = await file.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                tamanho_bytes += len(chunk)
-                f.write(chunk)
-    except Exception as e:
-        if zip_path.exists():
-            zip_path.unlink()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao salvar arquivo .zip no volume: {e}",
-        )
-
-    tamanho_mb = tamanho_bytes / (1024 * 1024)
-
-    extraidos: List[str] = []
-    try:
-        with zipfile.ZipFile(zip_path, "r") as z:
-            for member in z.namelist():
-                if not member.lower().endswith(".csv"):
-                    continue
-
-                nome_arquivo = Path(member).name
-                destino_csv = Path(UPLOAD_DIR) / nome_arquivo
-
-                with z.open(member) as src, open(destino_csv, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-
-                extraidos.append(str(destino_csv))
-    except zipfile.BadZipFile:
-        zip_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=400,
-            detail="Arquivo .zip inválido ou corrompido.",
-        )
-    except Exception as e:
-        zip_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao extrair arquivos do .zip: {e}",
-        )
-    finally:
-        zip_path.unlink(missing_ok=True)
-
-    return {
-        "status": "ok",
-        "mensagem": (
-            f"Arquivo {file.filename} (≈ {tamanho_mb:.2f} MB) enviado e "
-            f"{len(extraidos)} arquivo(s) .csv extraído(s) para {UPLOAD_DIR}. "
-            "Agora você pode chamar /reload para processar todos os CSV."
-        ),
-        "arquivo_zip": file.filename,
-        "tamanho_zip_mb": round(tamanho_mb, 2),
-        "total_csv_extraidos": len(extraidos),
-        "arquivos_csv": extraidos,
-    }
-
-
-# -----------------------------------------------------------------------------
-# ENDPOINTS DE CONSULTA BÁSICOS
-# -----------------------------------------------------------------------------
-
-@app.get("/votos/totais", response_model=List[VotoTotal])
-def votos_totais(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    nr_turno: Optional[str] = None,
-    cd_municipio: Optional[str] = None,
-    cd_cargo: Optional[str] = None,
-    nr_zona: Optional[str] = None,
-    nr_secao: Optional[str] = None,
-    nr_candidato: Optional[str] = None,
-    sg_partido: Optional[str] = None,
-    tp_voto: Optional[str] = None,
-    limite: int = Query(default=50, ge=1, le=1000),
-):
     """
-    Totais agregados com JOIN em candidatos_meta quando existir.
-    Não duplica votos, apenas usa a tabela votos como base.
+    Apaga todos os arquivos do volume e limpa as tabelas de votos.
+    CUIDADO: isso zera os dados.
     """
-    if uf:
-        uf = uf.upper()
-
-    if not any([ano, uf, cd_municipio, cd_cargo, nr_candidato, sg_partido]):
-        raise HTTPException(
-            status_code=400,
-            detail="Envie pelo menos um filtro entre: ano, uf, cd_municipio, cd_cargo, nr_candidato ou sg_partido.",
-        )
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # Verifica se existe candidatos_meta
-    try:
-        cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='candidatos_meta'"
-        )
-        has_cand_meta = cur.fetchone() is not None
-    except sqlite3.OperationalError:
-        has_cand_meta = False
-
-    params: List = []
-
-    if has_cand_meta:
-        sql = """
-            SELECT
-                v.ano,
-                v.uf,
-                v.cd_municipio,
-                COALESCE(v.nm_municipio, 'Estadual') AS nm_municipio,
-                v.cd_cargo,
-                v.ds_cargo,
-                v.nr_candidato,
-                COALESCE(cm.nm_candidato, v.nm_candidato, 'LEGENDA') AS nm_candidato,
-                COALESCE(cm.sg_partido, v.sg_partido) AS sg_partido,
-                cm.ds_sit_tot_turno AS ds_sit_tot_turno,
-                SUM(v.votos) AS total_votos
-            FROM votos v
-            LEFT JOIN candidatos_meta cm
-              ON cm.ano = v.ano
-             AND cm.uf = v.uf
-             AND cm.cd_cargo = v.cd_cargo
-             AND cm.nr_turno = v.nr_turno
-             AND cm.nr_candidato = v.nr_candidato
-            WHERE 1=1
-        """
-        prefix = "v."
-    else:
-        sql = """
-            SELECT
-                ano,
-                uf,
-                cd_municipio,
-                COALESCE(nm_municipio, 'Estadual') AS nm_municipio,
-                cd_cargo,
-                ds_cargo,
-                nr_candidato,
-                COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
-                sg_partido,
-                NULL AS ds_sit_tot_turno,
-                SUM(votos) AS total_votos
-            FROM votos
-            WHERE 1=1
-        """
-        prefix = ""
-
-    if ano:
-        sql += f" AND {prefix}ano = ?"
-        params.append(ano)
-    if uf:
-        sql += f" AND {prefix}uf = ?"
-        params.append(uf)
-    if nr_turno:
-        sql += f" AND {prefix}nr_turno = ?"
-        params.append(nr_turno)
-    if cd_municipio:
-        sql += f" AND {prefix}cd_municipio = ?"
-        params.append(cd_municipio)
-    if cd_cargo:
-        sql += f" AND {prefix}cd_cargo = ?"
-        params.append(cd_cargo)
-    if nr_zona:
-        sql += f" AND {prefix}nr_zona = ?"
-        params.append(nr_zona)
-    if nr_secao:
-        sql += f" AND {prefix}nr_secao = ?"
-        params.append(nr_secao)
-    if nr_candidato:
-        sql += f" AND {prefix}nr_candidato = ?"
-        params.append(nr_candidato)
-    if sg_partido:
-        sql += f" AND {prefix}sg_partido = ?"
-        params.append(sg_partido)
-    if tp_voto:
-        sql += f" AND {prefix}tp_voto = ?"
-        params.append(tp_voto)
-
-    if has_cand_meta:
-        sql += """
-            GROUP BY
-                v.ano, v.uf,
-                v.cd_municipio, v.nm_municipio,
-                v.cd_cargo, v.ds_cargo,
-                v.nr_candidato, v.nm_candidato,
-                v.sg_partido, cm.ds_sit_tot_turno
-            ORDER BY total_votos DESC
-            LIMIT ?
-        """
-    else:
-        sql += """
-            GROUP BY ano, uf,
-                     cd_municipio, nm_municipio,
-                     cd_cargo, ds_cargo,
-                     nr_candidato, nm_candidato,
-                     sg_partido
-            ORDER BY total_votos DESC
-            LIMIT ?
-        """
-
-    params.append(limite)
-
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    conn.close()
-
-    return [VotoTotal(**dict(r)) for r in rows]
-
-
-@app.get("/votos/zona", response_model=List[VotoZona])
-def votos_por_zona(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    cd_municipio: Optional[str] = None,
-    cd_cargo: Optional[str] = None,
-    nr_turno: Optional[str] = None,
-    nr_zona: Optional[str] = None,
-    nr_secao: Optional[str] = None,
-    nr_candidato: Optional[str] = None,
-    sg_partido: Optional[str] = None,
-    limite: int = Query(default=200, ge=1, le=5000),
-):
-    if uf:
-        uf = uf.upper()
-
-    if not any([ano, uf]):
-        raise HTTPException(
-            status_code=400,
-            detail="Envie pelo menos ano ou uf para consultar /votos/zona.",
-        )
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    sql = """
-        SELECT
-            ano,
-            uf,
-            nr_turno,
-            cd_municipio,
-            COALESCE(nm_municipio, 'Estadual') AS nm_municipio,
-            cd_cargo,
-            ds_cargo,
-            COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
-            nr_candidato,
-            sg_partido,
-            nr_zona,
-            nr_secao,
-            cd_local_votacao,
-            nm_local_votacao,
-            SUM(votos) AS votos
-        FROM votos
-        WHERE 1=1
-    """
-    params: List = []
-
-    if ano:
-        sql += " AND ano = ?"
-        params.append(ano)
-    if uf:
-        sql += " AND uf = ?"
-        params.append(uf)
-    if cd_municipio:
-        sql += " AND cd_municipio = ?"
-        params.append(cd_municipio)
-    if cd_cargo:
-        sql += " AND cd_cargo = ?"
-        params.append(cd_cargo)
-    if nr_turno:
-        sql += " AND nr_turno = ?"
-        params.append(nr_turno)
-    if nr_zona:
-        sql += " AND nr_zona = ?"
-        params.append(nr_zona)
-    if nr_secao:
-        sql += " AND nr_secao = ?"
-        params.append(nr_secao)
-    if nr_candidato:
-        sql += " AND nr_candidato = ?"
-        params.append(nr_candidato)
-    if sg_partido:
-        sql += " AND sg_partido = ?"
-        params.append(sg_partido)
-
-    sql += """
-        GROUP BY
-            ano,
-            uf,
-            nr_turno,
-            cd_municipio,
-            nm_municipio,
-            cd_cargo,
-            ds_cargo,
-            nm_candidato,
-            nr_candidato,
-            sg_partido,
-            nr_zona,
-            nr_secao,
-            cd_local_votacao,
-            nm_local_votacao
-        ORDER BY votos DESC
-        LIMIT ?
-    """
-    params.append(limite)
-
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    conn.close()
-
-    return [VotoZona(**dict(r)) for r in rows]
-
-
-# -----------------------------------------------------------------------------
-# ENDPOINT DE MAPA SIMPLES (AGRUPADO POR ESCOLA)
-# -----------------------------------------------------------------------------
-
-@app.get("/mapa/locais", response_model=List[LocalMapaCandidato])
-def mapa_locais_por_escola(
-    ano: str = Query(...),
-    uf: str = Query(...),
-    cd_municipio: str = Query(...),
-    nr_turno: str = Query(...),
-    cd_cargo: str = Query(...),
-    nr_candidato: Optional[str] = None,
-    nr_zona: Optional[str] = None,
-    nr_secao: Optional[str] = None,
-    cd_local_votacao: Optional[str] = None,
-    sg_partido: Optional[str] = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(1000, ge=1, le=5000),
-):
-    """
-    Cada item = um LOCAL (escola) com total de votos do candidato/partido.
-    Usa apenas tabela votos, não duplica contagem.
-    """
-    uf = uf.upper()
-    offset = (page - 1) * page_size
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    sql = """
-        WITH votos_local AS (
-            SELECT
-                ano,
-                uf,
-                nr_turno,
-                cd_municipio,
-                COALESCE(nm_municipio, 'Estadual') AS nm_municipio,
-                cd_cargo,
-                ds_cargo,
-                nr_candidato,
-                COALESCE(nm_candidato, 'LEGENDA') AS nm_candidato,
-                sg_partido,
-                nr_zona,
-                cd_local_votacao,
-                nm_local_votacao,
-                ds_local_votacao_endereco AS endereco,
-                GROUP_CONCAT(DISTINCT nr_secao) AS secoes_csv,
-                SUM(votos) AS total_votos
-            FROM votos
-            WHERE 1=1
-              AND ano = ?
-              AND uf = ?
-              AND cd_municipio = ?
-              AND nr_turno = ?
-              AND cd_cargo = ?
-    """
-    params: List = [ano, uf, cd_municipio, nr_turno, cd_cargo]
-
-    if nr_candidato:
-        sql += " AND nr_candidato = ?"
-        params.append(nr_candidato)
-    if nr_zona:
-        sql += " AND nr_zona = ?"
-        params.append(nr_zona)
-    if nr_secao:
-        sql += " AND nr_secao = ?"
-        params.append(nr_secao)
-    if cd_local_votacao:
-        sql += " AND cd_local_votacao = ?"
-        params.append(cd_local_votacao)
-    if sg_partido:
-        sql += " AND sg_partido = ?"
-        params.append(sg_partido)
-
-    sql += """
-            GROUP BY
-                ano,
-                uf,
-                nr_turno,
-                cd_municipio,
-                nm_municipio,
-                cd_cargo,
-                ds_cargo,
-                nr_candidato,
-                nm_candidato,
-                sg_partido,
-                nr_zona,
-                cd_local_votacao,
-                nm_local_votacao,
-                endereco
-        )
-        SELECT
-            ano,
-            uf,
-            nr_turno,
-            cd_municipio,
-            nm_municipio,
-            nr_zona,
-            cd_local_votacao,
-            nm_local_votacao,
-            endereco,
-            nr_candidato,
-            nm_candidato,
-            sg_partido,
-            total_votos,
-            secoes_csv
-        FROM votos_local
-        ORDER BY total_votos DESC
-        LIMIT ? OFFSET ?
-    """
-    params.extend([page_size, offset])
-
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    conn.close()
-
-    resultado: List[LocalMapaCandidato] = []
-    for r in rows:
-        d = dict(r)
-        secoes_csv = d.pop("secoes_csv", "") or ""
-        secoes_list = [s for s in secoes_csv.split(",") if s]
-        resultado.append(LocalMapaCandidato(**d, secoes=secoes_list))
-
-    return resultado
-
-
-# -----------------------------------------------------------------------------
-# OUTROS ENDPOINTS ANTIGOS
-# -----------------------------------------------------------------------------
-
-@app.get("/votos/municipio", response_model=List[VotoMunicipio])
-def votos_por_municipio(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    limite: int = Query(default=100, ge=1, le=5000),
-):
-    if uf:
-        uf = uf.upper()
-
-    if not any([ano, uf]):
-        raise HTTPException(
-            status_code=400,
-            detail="Envie pelo menos ano ou uf para consultar /votos/municipio.",
-        )
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    sql = """
-        SELECT
-            ano,
-            uf,
-            cd_municipio,
-            nm_municipio,
-            nm_candidato,
-            sg_partido,
-            SUM(votos) AS votos
-        FROM votos
-        WHERE 1=1
-    """
-    params: List = []
-
-    if ano:
-        sql += " AND ano = ?"
-        params.append(ano)
-    if uf:
-        sql += " AND uf = ?"
-        params.append(uf)
-
-    sql += """
-        GROUP BY ano, uf, cd_municipio, nm_municipio, nm_candidato, sg_partido
-        ORDER BY votos DESC
-        LIMIT ?
-    """
-    params.append(limite)
-
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    conn.close()
-    return [VotoMunicipio(**dict(r)) for r in rows]
-
-
-@app.get("/votos/cargo", response_model=List[VotoCargo])
-def votos_por_cargo(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    cd_cargo: Optional[str] = None,
-    limite: int = Query(default=100, ge=1, le=5000),
-):
-    if uf:
-        uf = uf.upper()
-
-    if not any([ano, uf]):
-        raise HTTPException(
-            status_code=400,
-            detail="Envie pelo menos ano ou uf para consultar /votos/cargo.",
-        )
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    sql = """
-        SELECT
-            ano,
-            uf,
-            cd_cargo,
-            ds_cargo,
-            nm_candidato,
-            sg_partido,
-            SUM(votos) AS votos
-        FROM votos
-        WHERE 1=1
-    """
-    params: List = []
-
-    if ano:
-        sql += " AND ano = ?"
-        params.append(ano)
-    if uf:
-        sql += " AND uf = ?"
-        params.append(uf)
-    if cd_cargo:
-        sql += " AND cd_cargo = ?"
-        params.append(cd_cargo)
-
-    sql += """
-        GROUP BY ano, uf, cd_cargo, ds_cargo, nm_candidato, sg_partido
-        ORDER BY votos DESC
-        LIMIT ?
-    """
-    params.append(limite)
-
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    conn.close()
-    return [VotoCargo(**dict(r)) for r in rows]
-
-
-@app.get("/candidatos", response_model=List[CandidatoInfo])
-def listar_candidatos(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    limite: int = Query(default=100, ge=1, le=5000),
-):
-    if uf:
-        uf = uf.upper()
-
-    if not any([ano, uf]):
-        raise HTTPException(
-            status_code=400,
-            detail="Envie pelo menos ano ou uf para consultar /candidatos.",
-        )
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    sql = """
-        SELECT
-            nm_candidato,
-            sg_partido,
-            nr_candidato,
-            ano,
-            uf,
-            SUM(votos) AS total_votos
-        FROM votos
-        WHERE 1=1
-    """
-    params: List = []
-
-    if ano:
-        sql += " AND ano = ?"
-        params.append(ano)
-    if uf:
-        sql += " AND uf = ?"
-        params.append(uf)
-
-    sql += """
-        GROUP BY nm_candidato, sg_partido, nr_candidato, ano, uf
-        ORDER BY total_votos DESC
-        LIMIT ?
-    """
-    params.append(limite)
-
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    conn.close()
-    return [CandidatoInfo(**dict(r)) for r in rows]
-
-
-@app.get("/partidos", response_model=List[PartidoInfo])
-def listar_partidos(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    limite: int = Query(default=100, ge=1, le=1000),
-):
-    if uf:
-        uf = uf.upper()
-
-    if not any([ano, uf]):
-        raise HTTPException(
-            status_code=400,
-            detail="Envie pelo menos ano ou uf para consultar /partidos.",
-        )
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    params: List = []
-
-    sql_join = """
-        SELECT
-            COALESCE(v.sg_partido, pm.sg_partido) AS sg_partido,
-            SUM(v.votos) AS total_votos,
-            GROUP_CONCAT(DISTINCT v.ano) AS anos_csv,
-            GROUP_CONCAT(DISTINCT v.uf) AS ufs_csv
-        FROM votos v
-        LEFT JOIN partidos_meta pm
-          ON pm.ano = v.ano
-         AND pm.uf = v.uf
-         AND pm.cd_cargo = v.cd_cargo
-         AND pm.nr_turno = v.nr_turno
-         AND pm.cd_municipio = v.cd_municipio
-         AND pm.sg_partido = v.sg_partido
-        WHERE 1=1
-    """
-
-    sql_sem_join = """
-        SELECT
-            sg_partido,
-            SUM(votos) AS total_votos,
-            GROUP_CONCAT(DISTINCT ano) AS anos_csv,
-            GROUP_CONCAT(DISTINCT uf) AS ufs_csv
-        FROM votos
-        WHERE 1=1
-    """
-
-    filtros = ""
-    if ano:
-        filtros += " AND v.ano = ?"
-        params.append(ano)
-    if uf:
-        filtros += " AND v.uf = ?"
-        params.append(uf)
-
-    sql_join += filtros + """
-        GROUP BY COALESCE(v.sg_partido, pm.sg_partido)
-        ORDER BY total_votos DESC
-        LIMIT ?
-    """
-    sql_sem_join += filtros.replace("v.", "") + """
-        GROUP BY sg_partido
-        ORDER BY total_votos DESC
-        LIMIT ?
-    """
-
-    params_with_limit = params + [limite]
-
-    rows = []
-    try:
-        cur.execute(sql_join, params_with_limit)
-        rows = cur.fetchall()
-    except sqlite3.OperationalError:
-        cur.execute(sql_sem_join, params_with_limit)
-        rows = cur.fetchall()
-
-    conn.close()
-
-    result: List[PartidoInfo] = []
-    for r in rows:
-        d = dict(r)
-        anos_csv = d.get("anos_csv") or ""
-        ufs_csv = d.get("ufs_csv") or ""
-        anos_list = [a for a in anos_csv.split(",") if a] if anos_csv else []
-        ufs_list = [u for u in ufs_csv.split(",") if u] if ufs_csv else []
-        result.append(
-            PartidoInfo(
-                sg_partido=d.get("sg_partido"),
-                total_votos=int(d.get("total_votos") or 0),
-                anos=anos_list,
-                ufs=ufs_list,
-            )
-        )
-    return result
-
-
-@app.get("/ranking/partidos", response_model=List[RankingPartido])
-def ranking_partidos(
-    ano: Optional[str] = None,
-    uf: Optional[str] = None,
-    cd_municipio: Optional[str] = None,
-    cd_cargo: Optional[str] = None,
-    nr_turno: Optional[str] = None,
-    limite: int = Query(default=50, ge=1, le=1000),
-):
-    """
-    Ranking simples de partidos (soma de todos os votos – nominais + legenda)
-    respeitando filtros de ano/uf/município/cargo/turno.
-    """
-    if uf:
-        uf = uf.upper()
-
-    if not any([ano, uf, cd_municipio, cd_cargo]):
-        raise HTTPException(
-            status_code=400,
-            detail="Envie pelo menos ano, uf, cd_municipio ou cd_cargo para /ranking/partidos.",
-        )
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    sql = """
-        SELECT
-            sg_partido,
-            SUM(votos) AS total_votos
-        FROM votos
-        WHERE 1=1
-    """
-    params: List = []
-
-    if ano:
-        sql += " AND ano = ?"
-        params.append(ano)
-    if uf:
-        sql += " AND uf = ?"
-        params.append(uf)
-    if cd_municipio:
-        sql += " AND cd_municipio = ?"
-        params.append(cd_municipio)
-    if cd_cargo:
-        sql += " AND cd_cargo = ?"
-        params.append(cd_cargo)
-    if nr_turno:
-        sql += " AND nr_turno = ?"
-        params.append(nr_turno)
-
-    sql += """
-        GROUP BY sg_partido
-        ORDER BY total_votos DESC
-        LIMIT ?
-    """
-    params.append(limite)
-
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    conn.close()
-    return [RankingPartido(**dict(r)) for r in rows]
-
-
-@app.get("/estatisticas", response_model=Estatisticas)
-def estatisticas():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    try:
-        cur.execute("SELECT COUNT(*) AS c, SUM(votos) AS t FROM votos")
-        row = cur.fetchone()
-        total_registros = row["c"] or 0
-        total_votos = row["t"] or 0
-    except sqlite3.OperationalError:
-        total_registros = 0
-        total_votos = 0
-
-    try:
-        cur.execute("SELECT COUNT(DISTINCT nm_candidato) AS c FROM votos")
-        row = cur.fetchone()
-        total_candidatos = row["c"] or 0
-    except sqlite3.OperationalError:
-        total_candidatos = 0
-
-    try:
-        cur.execute("SELECT COUNT(DISTINCT sg_partido) AS c FROM votos")
-        row = cur.fetchone()
-        total_partidos = row["c"] or 0
-    except sqlite3.OperationalError:
-        total_partidos = 0
-
-    try:
-        cur.execute("SELECT DISTINCT ano FROM votos WHERE ano IS NOT NULL")
-        anos = sorted({r["ano"] for r in cur.fetchall() if r["ano"]})
-    except sqlite3.OperationalError:
-        anos = []
-
-    try:
-        cur.execute("SELECT DISTINCT uf FROM votos WHERE uf IS NOT NULL")
-        ufs = sorted({r["uf"] for r in cur.fetchall() if r["uf"]})
-    except sqlite3.OperationalError:
-        ufs = []
-
-    conn.close()
-
-    return Estatisticas(
-        total_registros=int(total_registros),
-        total_votos=int(total_votos),
-        total_candidatos=int(total_candidatos),
-        total_partidos=int(total_partidos),
-        anos_disponiveis=anos,
-        ufs_disponiveis=ufs,
-    )
-
-
-# -----------------------------------------------------------------------------
-# 🔹 NOVOS ENDPOINTS – RANKING E MAPA DETALHADO
-# -----------------------------------------------------------------------------
-
-@app.get("/ranking/candidatos", response_model=List[CandidatoRankingMunicipio])
-def ranking_candidatos_municipio(
-    ano: str = Query(...),
-    uf: str = Query(...),
-    cd_municipio: str = Query(...),
-    cd_cargo: str = Query(...),
-    nr_turno: Optional[str] = None,
-    limite: int = Query(default=500, ge=1, le=5000),
-):
-    """
-    PRIMEIRO FILTRO DA SUA TELA:
-    Ano, Estado, Município, Cargo (+opcional Turno).
-    Retorna todos os candidatos rankeados por votos (maior -> menor),
-    com partido e status (ds_sit_tot_turno) quando existir em candidatos_meta.
-    """
-    uf = uf.upper()
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    sql = """
-        SELECT
-            v.ano,
-            v.uf,
-            v.cd_municipio,
-            COALESCE(v.nm_municipio, 'Estadual') AS nm_municipio,
-            v.cd_cargo,
-            v.ds_cargo,
-            v.nr_turno,
-            v.nr_candidato,
-            COALESCE(cm.nm_candidato, v.nm_candidato, 'LEGENDA') AS nm_candidato,
-            COALESCE(cm.sg_partido, v.sg_partido) AS sg_partido,
-            cm.nm_partido,
-            cm.ds_sit_tot_turno,
-            SUM(v.votos) AS total_votos
-        FROM votos v
-        LEFT JOIN candidatos_meta cm
-          ON cm.ano = v.ano
-         AND cm.uf = v.uf
-         AND cm.cd_cargo = v.cd_cargo
-         AND cm.nr_turno = v.nr_turno
-         AND cm.nr_candidato = v.nr_candidato
-        WHERE 1=1
-          AND v.ano = ?
-          AND v.uf = ?
-          AND v.cd_municipio = ?
-          AND v.cd_cargo = ?
-    """
-    params: List = [ano, uf, cd_municipio, cd_cargo]
-
-    if nr_turno:
-        sql += " AND v.nr_turno = ?"
-        params.append(nr_turno)
-
-    sql += """
-        GROUP BY
-            v.ano, v.uf, v.cd_municipio, v.nm_municipio,
-            v.cd_cargo, v.ds_cargo, v.nr_turno,
-            v.nr_candidato, v.nm_candidato,
-            v.sg_partido, cm.nm_partido, cm.ds_sit_tot_turno
-        ORDER BY total_votos DESC
-        LIMIT ?
-    """
-    params.append(limite)
-
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    conn.close()
-
-    return [CandidatoRankingMunicipio(**dict(r)) for r in rows]
-
-
-@app.get("/ranking/partidos/detalhado", response_model=List[PartidoRankingMunicipio])
-def ranking_partidos_municipio(
-    ano: str = Query(...),
-    uf: str = Query(...),
-    cd_municipio: str = Query(...),
-    cd_cargo: str = Query(...),
-    nr_turno: Optional[str] = None,
-    limite: int = Query(default=200, ge=1, le=5000),
-):
-    """
-    Ranking de partidos no município para o cargo/turno,
-    somando todos os votos (nominais + legenda).
-    """
-    uf = uf.upper()
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    sql = """
-        SELECT
-            v.ano,
-            v.uf,
-            v.cd_municipio,
-            COALESCE(v.nm_municipio, 'Estadual') AS nm_municipio,
-            v.cd_cargo,
-            v.ds_cargo,
-            v.nr_turno,
-            COALESCE(v.sg_partido, pm.sg_partido) AS sg_partido,
-            pm.nm_partido,
-            SUM(v.votos) AS total_votos
-        FROM votos v
-        LEFT JOIN partidos_meta pm
-          ON pm.ano = v.ano
-         AND pm.uf = v.uf
-         AND pm.cd_cargo = v.cd_cargo
-         AND pm.nr_turno = v.nr_turno
-         AND pm.cd_municipio = v.cd_municipio
-         AND pm.sg_partido = v.sg_partido
-        WHERE 1=1
-          AND v.ano = ?
-          AND v.uf = ?
-          AND v.cd_municipio = ?
-          AND v.cd_cargo = ?
-    """
-    params: List = [ano, uf, cd_municipio, cd_cargo]
-
-    if nr_turno:
-        sql += " AND v.nr_turno = ?"
-        params.append(nr_turno)
-
-    sql += """
-        GROUP BY
-            v.ano, v.uf, v.cd_municipio, v.nm_municipio,
-            v.cd_cargo, v.ds_cargo, v.nr_turno,
-            sg_partido, pm.nm_partido
-        ORDER BY total_votos DESC
-        LIMIT ?
-    """
-    params.append(limite)
-
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    conn.close()
-
-    return [PartidoRankingMunicipio(**dict(r)) for r in rows]
-
-
-@app.get("/candidatos/sugestoes", response_model=List[CandidatoSugestaoMapa])
-def sugestoes_candidatos_mapa(
-    ano: str = Query(...),
-    uf: str = Query(...),
-    cd_municipio: str = Query(...),
-    cd_cargo: str = Query(...),
-    nr_turno: str = Query(...),
-    q: str = Query(..., min_length=2),
-    limite: int = Query(default=20, ge=1, le=100),
-):
-    """
-    Autocomplete para a sub-aba MAPA.
-    Filtros: ano, uf, município, cargo, turno + texto digitado (q).
-    """
-    uf = uf.upper()
-    texto = f"%{q.upper()}%"
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # Tenta usar candidatos_meta primeiro
-    try:
-        sql = """
-            SELECT DISTINCT
-                nr_candidato,
-                nm_candidato,
-                sg_partido
-            FROM candidatos_meta
-            WHERE ano = ?
-              AND uf = ?
-              AND cd_municipio = ?
-              AND cd_cargo = ?
-              AND nr_turno = ?
-              AND UPPER(nm_candidato) LIKE ?
-            ORDER BY nm_candidato
-            LIMIT ?
-        """
-        params = [ano, uf, cd_municipio, cd_cargo, nr_turno, texto, limite]
-        cur.execute(sql, params)
-        rows = cur.fetchall()
-    except sqlite3.OperationalError:
-        # Fallback para tabela votos
-        sql = """
-            SELECT DISTINCT
-                nr_candidato,
-                nm_candidato,
-                sg_partido
-            FROM votos
-            WHERE ano = ?
-              AND uf = ?
-              AND cd_municipio = ?
-              AND cd_cargo = ?
-              AND nr_turno = ?
-              AND UPPER(nm_candidato) LIKE ?
-            ORDER BY nm_candidato
-            LIMIT ?
-        """
-        params = [ano, uf, cd_municipio, cd_cargo, nr_turno, texto, limite]
-        cur.execute(sql, params)
-        rows = cur.fetchall()
-
-    conn.close()
-    return [CandidatoSugestaoMapa(**dict(r)) for r in rows]
-
-
-@app.get("/mapa/candidato-detalhe", response_model=MapaCandidatoResponse)
-def mapa_candidato_detalhe(
-    ano: str = Query(...),
-    uf: str = Query(...),
-    cd_municipio: str = Query(...),
-    cd_cargo: str = Query(...),
-    nr_turno: str = Query(...),
-    nr_candidato: str = Query(...),
-):
-    """
-    Sub-aba MAPA (por candidato):
-    - Resumo com total de votos do candidato no município
-    - Lista de votos por seção/zona/local (Lovable soma por bairro).
-    """
-    uf = uf.upper()
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # Resumo do candidato (usa votos + candidatos_meta)
-    sql_resumo = """
-        SELECT
-            v.nr_candidato,
-            COALESCE(cm.nm_candidato, v.nm_candidato, 'LEGENDA') AS nm_candidato,
-            COALESCE(cm.sg_partido, v.sg_partido) AS sg_partido,
-            cm.nm_partido,
-            cm.ds_sit_tot_turno,
-            SUM(v.votos) AS total_votos_municipio
-        FROM votos v
-        LEFT JOIN candidatos_meta cm
-          ON cm.ano = v.ano
-         AND cm.uf = v.uf
-         AND cm.cd_cargo = v.cd_cargo
-         AND cm.nr_turno = v.nr_turno
-         AND cm.nr_candidato = v.nr_candidato
-        WHERE v.ano = ?
-          AND v.uf = ?
-          AND v.cd_municipio = ?
-          AND v.cd_cargo = ?
-          AND v.nr_turno = ?
-          AND v.nr_candidato = ?
-        GROUP BY
-            v.nr_candidato,
-            nm_candidato,
-            sg_partido,
-            cm.nm_partido,
-            cm.ds_sit_tot_turno
-    """
-    params_resumo = [ano, uf, cd_municipio, cd_cargo, nr_turno, nr_candidato]
-    cur.execute(sql_resumo, params_resumo)
-    resumo_row = cur.fetchone()
-
-    if not resumo_row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Candidato não encontrado para esses filtros.")
-
-    resumo = ResumoMapaCandidato(**dict(resumo_row))
-
-    # Detalhe por zona/seção/local
-    sql_locais = """
-        SELECT
-            v.nr_zona,
-            v.nr_secao,
-            v.cd_local_votacao,
-            COALESCE(v.nm_local_votacao, ls.nm_local_votacao) AS nm_local_votacao,
-            COALESCE(v.ds_local_votacao_endereco, ls.ds_local_votacao_endereco) AS endereco,
-            SUM(v.votos) AS votos
-        FROM votos v
-        LEFT JOIN locais_secao ls
-          ON ls.ano = v.ano
-         AND ls.uf = v.uf
-         AND ls.cd_municipio = v.cd_municipio
-         AND ls.nr_zona = v.nr_zona
-         AND ls.nr_secao = v.nr_secao
-        WHERE v.ano = ?
-          AND v.uf = ?
-          AND v.cd_municipio = ?
-          AND v.cd_cargo = ?
-          AND v.nr_turno = ?
-          AND v.nr_candidato = ?
-        GROUP BY
-            v.nr_zona,
-            v.nr_secao,
-            v.cd_local_votacao,
-            nm_local_votacao,
-            endereco
-        ORDER BY v.nr_zona, v.nr_secao
-    """
-    params_locais = [ano, uf, cd_municipio, cd_cargo, nr_turno, nr_candidato]
-    cur.execute(sql_locais, params_locais)
-    rows = cur.fetchall()
-    conn.close()
-
-    locais = [LocalMapaCandidatoDetalhe(**dict(r)) for r in rows]
-
-    return MapaCandidatoResponse(candidato=resumo, locais=locais)
-
-
-@app.get("/mapa/partido-detalhe", response_model=MapaPartidoResponse)
-def mapa_partido_detalhe(
-    ano: str = Query(...),
-    uf: str = Query(...),
-    cd_municipio: str = Query(...),
-    cd_cargo: str = Query(...),
-    nr_turno: str = Query(...),
-    sg_partido: str = Query(...),
-):
-    """
-    Sub-aba MAPA (por partido):
-    - Resumo com total de votos do partido no município
-    - Lista de votos por seção/zona/local.
-    """
-    uf = uf.upper()
-    sg_partido = sg_partido.upper()
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # Resumo do partido
-    sql_resumo = """
-        SELECT
-            COALESCE(pm.sg_partido, v.sg_partido) AS sg_partido,
-            pm.nm_partido,
-            SUM(v.votos) AS total_votos_municipio
-        FROM votos v
-        LEFT JOIN partidos_meta pm
-          ON pm.ano = v.ano
-         AND pm.uf = v.uf
-         AND pm.cd_cargo = v.cd_cargo
-         AND pm.nr_turno = v.nr_turno
-         AND pm.cd_municipio = v.cd_municipio
-         AND pm.sg_partido = v.sg_partido
-        WHERE v.ano = ?
-          AND v.uf = ?
-          AND v.cd_municipio = ?
-          AND v.cd_cargo = ?
-          AND v.nr_turno = ?
-          AND UPPER(v.sg_partido) = ?
-        GROUP BY sg_partido, pm.nm_partido
-    """
-    params_resumo = [ano, uf, cd_municipio, cd_cargo, nr_turno, sg_partido]
-    cur.execute(sql_resumo, params_resumo)
-    resumo_row = cur.fetchone()
-
-    if not resumo_row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Partido não encontrado para esses filtros.")
-
-    resumo = ResumoMapaPartido(**dict(resumo_row))
-
-    # Detalhe por zona/seção/local
-    sql_locais = """
-        SELECT
-            v.nr_zona,
-            v.nr_secao,
-            v.cd_local_votacao,
-            COALESCE(v.nm_local_votacao, ls.nm_local_votacao) AS nm_local_votacao,
-            COALESCE(v.ds_local_votacao_endereco, ls.ds_local_votacao_endereco) AS endereco,
-            SUM(v.votos) AS votos
-        FROM votos v
-        LEFT JOIN locais_secao ls
-          ON ls.ano = v.ano
-         AND ls.uf = v.uf
-         AND ls.cd_municipio = v.cd_municipio
-         AND ls.nr_zona = v.nr_zona
-         AND ls.nr_secao = v.nr_secao
-        WHERE v.ano = ?
-          AND v.uf = ?
-          AND v.cd_municipio = ?
-          AND v.cd_cargo = ?
-          AND v.nr_turno = ?
-          AND UPPER(v.sg_partido) = ?
-        GROUP BY
-            v.nr_zona,
-            v.nr_secao,
-            v.cd_local_votacao,
-            nm_local_votacao,
-            endereco
-        ORDER BY v.nr_zona, v.nr_secao
-    """
-    params_locais = [ano, uf, cd_municipio, cd_cargo, nr_turno, sg_partido]
-    cur.execute(sql_locais, params_locais)
-    rows = cur.fetchall()
-    conn.close()
-
-    locais = [LocalMapaPartidoDetalhe(**dict(r)) for r in rows]
-
-    return MapaPartidoResponse(partido=resumo, locais=locais)
+    # Apaga arquivos do volume
+    for path in Path(UPLOAD_DIR).glob("*"):
+        if path.is_file():
+            path.unlink()
+        else:
+            shutil.rmtree(path, ignore_errors=True)
+
+    # Limpa dados no banco
+    clear_all_data()
+
+    return {"mensagem": "Volume e dados de votos apagados com sucesso"}

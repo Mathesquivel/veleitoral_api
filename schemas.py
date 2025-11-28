@@ -1,9 +1,7 @@
 # schemas.py
-from typing import Optional, List
+from typing import List, Optional
 from pydantic import BaseModel
 
-
-# ===== MODELOS DE SAÍDA PRINCIPAIS =====
 
 class VotoTotalOut(BaseModel):
     ano: Optional[str]
@@ -58,7 +56,7 @@ class VotoCargoOut(BaseModel):
 
 
 class PartidoOut(BaseModel):
-    sg_partido: str
+    sg_partido: Optional[str]
     ano: Optional[str]
     total_votos: int
 
@@ -67,7 +65,7 @@ class PartidoOut(BaseModel):
 
 
 class RankingPartidosOut(BaseModel):
-    sg_partido: str
+    sg_partido: Optional[str]
     total_votos: int
 
     class Config:

@@ -106,7 +106,7 @@ def ingest_votacao_secao(path: Path) -> int:
         df["nr_local_votacao"] = chunk.get("NR_LOCAL_VOTACAO")
         df["nm_local_votacao"] = chunk.get("NM_LOCAL_VOTACAO")
 
-        # >>> CORREÇÃO AQUI: nada de "or" com Series <<<
+        # Endereço do local de votação (varia de nome)
         if "DS_LOCAL_VOTACAO_ENDERECO" in chunk.columns:
             endereco = chunk["DS_LOCAL_VOTACAO_ENDERECO"]
         elif "DS_ENDERECO_LOCAL_VOTACAO" in chunk.columns:
@@ -143,7 +143,7 @@ def ingest_votacao_secao(path: Path) -> int:
 
         linhas_total += len(df)
 
-    # Log
+    # Log de importação
     with SessionLocal() as db:
         log = ImportLog(
             tipo_arquivo="secao",
