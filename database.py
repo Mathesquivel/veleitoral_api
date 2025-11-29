@@ -8,29 +8,29 @@ Base = declarative_base()
 
 def _build_database_url():
     """
-    Retorna automaticamente a URL do banco (Railway / local).
-    Aceita múltiplas variáveis para evitar erros:
-    - DATABASE_URL (Railway padrão)
+    Retorna automaticamente a URL do banco (Railway ou local).
+    Aceita múltiplas variáveis para garantir compatibilidade:
+    - DATABASE_URL (padrão)
+    - DATABASE_PUBLIC_URL (Railway criou esta)
     - POSTGRES_URL
     - POSTGRESQL_URL
-    - URL_PUBLICA_DO_BANCO_DE_DADOS (sua variável antiga)
     - Qualquer variável que contenha 'postgres'
     """
 
-    # Prioridade explícita
-    env_keys = [
+    preferred_keys = [
         "DATABASE_URL",
+        "DATABASE_PUBLIC_URL",
         "POSTGRES_URL",
         "POSTGRESQL_URL",
         "URL_PUBLICA_DO_BANCO_DE_DADOS",
     ]
 
-    # Procura diretamente por essas keys
-    for key in env_keys:
+    # Busca nas chaves conhecidas
+    for key in preferred_keys:
         if key in os.environ and os.environ[key].strip():
             return os.environ[key].strip()
 
-    # Procura por QUALQUER variavel que contenha 'postgres'
+    # Busca qualquer variável contendo 'postgres'
     for key, value in os.environ.items():
         if "postgres" in key.lower() and value.strip():
             return value.strip()
@@ -38,17 +38,17 @@ def _build_database_url():
     # Se nada encontrado → erro claro
     raise RuntimeError(
         "❌ Nenhuma URL de banco encontrada.\n"
-        "Certifique-se de definir DATABASE_URL no Railway."
+        "Crie a variável DATABASE_URL ou DATABASE_PUBLIC_URL no Railway."
     )
 
 
 DATABASE_URL = _build_database_url()
 
-# Railway muitas vezes entrega sem sslmode — adicionamos se faltar
+# Adiciona sslmode caso não exista (necessário no Railway)
 if "sslmode" not in DATABASE_URL:
     DATABASE_URL += "?sslmode=require"
 
-# Cria engine SQLAlchemy
+# Engine SQLAlchemy
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
@@ -67,5 +67,5 @@ def get_db():
 
 
 def init_db():
-    """Cria tabelas automaticamente (somente se não existirem)."""
+    """Cria tabelas se não existirem."""
     Base.metadata.create_all(bind=engine)
