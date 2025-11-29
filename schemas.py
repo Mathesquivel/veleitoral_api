@@ -1,4 +1,3 @@
-# schemas.py
 from typing import List, Optional
 from pydantic import BaseModel
 
@@ -12,6 +11,25 @@ class VotoTotalOut(BaseModel):
     nr_candidato: Optional[str]
     nm_candidato: Optional[str]
     sg_partido: Optional[str]
+    total_votos: int
+
+
+class CandidatoOut(BaseModel):
+    """
+    Modelo específico para /candidatos.
+
+    Igual ao VotoTotalOut, porém incluindo:
+    - ds_sit_tot_turno (status no turno: ELEITO, SUPLENTE, NÃO ELEITO, etc.)
+    """
+    ano: Optional[str]
+    uf: Optional[str]
+    cd_municipio: Optional[str]
+    nm_municipio: Optional[str]
+    ds_cargo: Optional[str]
+    nr_candidato: Optional[str]
+    nm_candidato: Optional[str]
+    sg_partido: Optional[str]
+    ds_sit_tot_turno: Optional[str]
     total_votos: int
 
 

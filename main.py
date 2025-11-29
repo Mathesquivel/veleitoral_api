@@ -29,6 +29,7 @@ from ingestor import (
 from models import VotoSecao, ResumoMunZona, CandidatoMeta
 from schemas import (
     VotoTotalOut,
+    CandidatoOut,   # ✅ novo
     VotoZonaOut,
     VotoMunicipioOut,
     VotoCargoOut,
@@ -342,17 +343,30 @@ def votos_por_cargo(
 # CANDIDATOS / PARTIDOS
 # =============================
 
-@app.get("/candidatos", response_model=List[VotoTotalOut])
+@app.get("/candidatos", response_model=List[CandidatoOut])
 def candidatos(
     ano: Optional[str] = Query(None),
     uf: Optional[str] = Query(None),
+    cd_municipio: Optional[str] = Query(
+        None,
+        description="Código do município (CD_MUNICIPIO) para filtrar os candidatos."
+    ),
     ds_cargo: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Limite máximo de candidatos retornados. Ignorado quando cd_municipio é informado."
+    ),
     db: Session = Depends(get_db),
 ):
     """
     Lista candidatos com total de votos.
-    Votos = soma de votos_secao.
+
+    - Votos = soma de votos_secao.qt_votos
+    - Metadados = candidatos_meta
+    - Quando `cd_municipio` é fornecido, TODOS os candidatos daquele município
+      são retornados (sem limite fixo de 100).
     """
     q = db.query(
         CandidatoMeta.ano,
@@ -363,6 +377,7 @@ def candidatos(
         CandidatoMeta.nr_candidato,
         CandidatoMeta.nm_candidato,
         CandidatoMeta.sg_partido,
+        CandidatoMeta.ds_sit_tot_turno,
         func.sum(VotoSecao.qt_votos).label("total_votos"),
     ).join(
         VotoSecao,
@@ -379,6 +394,8 @@ def candidatos(
         q = q.filter(CandidatoMeta.ano == ano)
     if uf:
         q = q.filter(CandidatoMeta.uf == uf)
+    if cd_municipio:
+        q = q.filter(CandidatoMeta.cd_municipio == cd_municipio)
     if ds_cargo:
         q = q.filter(VotoSecao.ds_cargo == ds_cargo)
 
@@ -391,12 +408,19 @@ def candidatos(
         CandidatoMeta.nr_candidato,
         CandidatoMeta.nm_candidato,
         CandidatoMeta.sg_partido,
-    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
+        CandidatoMeta.ds_sit_tot_turno,
+    ).order_by(func.sum(VotoSecao.qt_votos).desc())
+
+    # Regra de paginação:
+    # - Se cd_municipio foi informado, NÃO aplica limit (retorna todos os candidatos do município).
+    # - Caso contrário, aplica o limit normalmente.
+    if not cd_municipio:
+        q = q.limit(limit)
 
     rows = q.all()
 
     return [
-        VotoTotalOut(
+        CandidatoOut(
             ano=r.ano,
             uf=r.uf,
             cd_municipio=r.cd_municipio,
@@ -405,6 +429,7 @@ def candidatos(
             nr_candidato=r.nr_candidato,
             nm_candidato=r.nm_candidato,
             sg_partido=r.sg_partido,
+            ds_sit_tot_turno=r.ds_sit_tot_turno,
             total_votos=r.total_votos,
         )
         for r in rows
