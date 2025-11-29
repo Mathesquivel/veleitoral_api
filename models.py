@@ -89,39 +89,44 @@ class ImportLog(Base):
 
 
 # ============================================
-# VOTACAO_CANDIDATO_MUNZONA (JÁ NO POSTGRES)
+# TABELA votacao_candidato_munzona (Postgres)
 # ============================================
 
 class VotoCandidatoMunZona(Base):
     """
-    Mapeia a tabela 'votacao_candidato_munzona' que já está no Postgres.
+    Mapeia a tabela 'votacao_candidato_munzona' do Postgres,
+    usando EXATAMENTE os nomes de coluna que você listou:
 
-    Importante:
-    - As colunas de votos abaixo são TODAS opcionais.
-    - A função _get_voto_col (em main.py) descobre qual delas existe
-      de verdade no banco (qt_votos, qt_votos_nominais_validos etc.).
-    - Só a coluna que realmente existe será usada nas queries.
+    - ANO_ELEICAO
+    - SG_UF
+    - NM_MUNIC
+    - NR_CANDI
+    - NM_URNA
+    - NM_CAND
+    - SG_PARTIDO
+    - QT_VOTOS
+    - DS_SIT_TOT_TURNO
     """
 
     __tablename__ = "votacao_candidato_munzona"
 
-    ano = Column(String, primary_key=True)
-    uf = Column(String(2), primary_key=True)
-    cd_municipio = Column(String, primary_key=True)
-    nm_municipio = Column(String)
+    # chaves lógicas (podem não estar como PK no banco, mas funcionam no ORM)
+    ano = Column("ANO_ELEICAO", String, primary_key=True)
+    uf = Column("SG_UF", String(2), primary_key=True)
+    nm_municipio = Column("NM_MUNIC", String, primary_key=True)
 
-    cd_cargo = Column(String, primary_key=True)
-    ds_cargo = Column(String)
+    nr_candidato = Column("NR_CANDI", String, primary_key=True)
 
-    nr_votavel = Column(String, primary_key=True)
-    nm_votavel = Column(String)
+    nm_urna_candidato = Column("NM_URNA", String)
+    nm_candidato = Column("NM_CAND", String)
 
-    sg_partido = Column(String)
+    sg_partido = Column("SG_PARTIDO", String)
 
-    ds_sit_tot_turno = Column(String)
+    qt_votos = Column("QT_VOTOS", BigInteger)
 
-    # Possíveis colunas de votos (uma ou algumas podem existir no banco)
-    qt_votos_nominais_validos = Column(BigInteger, nullable=True)
-    qt_votos_nominais = Column(BigInteger, nullable=True)
-    qt_votos_validos = Column(BigInteger, nullable=True)
-    qt_votos = Column(BigInteger, nullable=True)
+    ds_sit_tot_turno = Column("DS_SIT_TOT_TURNO", String)
+
+    # campos adicionais comuns na base (se existirem no seu banco):
+    cd_municipio = Column("CD_MUNIC", String, nullable=True)
+    cd_cargo = Column("CD_CARGO", String, nullable=True)
+    ds_cargo = Column("DS_CARGO", String, nullable=True)

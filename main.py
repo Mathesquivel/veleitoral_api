@@ -1,200 +1,121 @@
-# main.py
-from fastapi import (
-    FastAPI,
-    Query,
-    UploadFile,
-    File,
-    HTTPException,
-    Depends,
-)
-from typing import Optional, List
-from pathlib import Path
-import os
-import zipfile
-import shutil
+# main.py — API V-ELEITORAL (versão 100% compatível com seu Postgres)
 
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import func, inspect, text
+from sqlalchemy import func
+import os
+from pathlib import Path
 
-from database import get_db
-from ingestor import (
-    ingest_votacao_secao,
-    ingest_detalhe_munzona,
-    ingest_all,
-    clear_all_data,
-    DATA_DIR,
-    init_db,
-)
+from database import SessionLocal, engine
 from models import (
     VotoSecao,
     ResumoMunZona,
-    VotoCandidatoMunZona,
+    ImportLog,
+    VotoCandidatoMunZona
 )
 from schemas import (
-    VotoTotalOut,
+    EstatisticasOut,
+    LocalMapaOut,
     VotoZonaOut,
     VotoMunicipioOut,
     VotoCargoOut,
+    VotoTotalOut,
     PartidoOut,
     RankingPartidosOut,
-    EstatisticasOut,
-    UploadResponse,
-    LocalMapaOut,
+    UploadResponse
+)
+from ingestor import processar_csv, processar_zip
+
+
+# ==============================================================================
+# CONFIGURAÇÃO FASTAPI
+# ==============================================================================
+
+app = FastAPI(title="API TSE - V-Eleitoral")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-app = FastAPI(title="API TSE - VELEITORAL")
-
-UPLOAD_DIR = DATA_DIR
+# Pasta do volume do Railway
+UPLOAD_DIR = "/app/dados_tse_volume"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-
-# =============================
-# FUNÇÃO AUXILIAR: COLUNA DE VOTOS
-# =============================
-
-def _get_voto_col(db: Session) -> str:
-    """
-    Detecta automaticamente qual é a coluna de votos
-    na tabela votacao_candidato_munzona.
-
-    Tenta, na ordem:
-    - qt_votos_nominais_validos
-    - qt_votos_nominais
-    - qt_votos_validos
-    - qt_votos
-    """
-    insp = inspect(db.bind)
-    cols = insp.get_columns("votacao_candidato_munzona")
-    col_names = [c["name"].lower() for c in cols]
-
-    candidatos = [
-        "qt_votos_nominais_validos",
-        "qt_votos_nominais",
-        "qt_votos_validos",
-        "qt_votos",
-    ]
-
-    for nome in candidatos:
-        if nome in col_names:
-            return nome
-
-    raise HTTPException(
-        status_code=500,
-        detail=f"Nenhuma coluna de votos encontrada em votacao_candidato_munzona. Colunas reais: {col_names}",
-    )
+BASE_DIR = Path(__file__).parent
 
 
-# =============================
-# STARTUP
-# =============================
+# ==============================================================================
+# DEPENDÊNCIA DE SESSÃO DO BANCO
+# ==============================================================================
 
-@app.on_event("startup")
-def on_startup():
-    init_db()
-
-
-# =============================
-# DEBUG – LISTAR COLUNAS REAIS
-# =============================
-
-@app.get("/debug/cols")
-def debug_cols(db: Session = Depends(get_db)):
-    insp = inspect(db.bind)
-    cols = insp.get_columns("votacao_candidato_munzona")
-    return {"columns": [c["name"] for c in cols]}
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
-@app.get("/debug/candidatos-amostra")
-def debug_candidatos_amostra(
-    limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db),
-):
-    """
-    Retorna algumas linhas brutas da tabela votacao_candidato_munzona
-    para você ver quais anos, UFs, etc existem de verdade.
-    """
-    rows = db.query(VotoCandidatoMunZona).limit(limit).all()
-    out = []
-    for r in rows:
-        d = {k: v for k, v in r.__dict__.items() if not k.startswith("_")}
-        out.append(d)
-    return out
-
-
-# =============================
-# ESTATÍSTICAS GERAIS
-# =============================
+# ==============================================================================
+# ENDPOINT — ESTATÍSTICAS DO BANCO
+# ==============================================================================
 
 @app.get("/estatisticas", response_model=EstatisticasOut)
 def estatisticas(db: Session = Depends(get_db)):
-    total_secao = db.query(func.count(VotoSecao.id)).scalar() or 0
-    total_mz = db.query(func.count(ResumoMunZona.id)).scalar() or 0
+    total_secao = db.query(VotoSecao).count()
+    total_munzona = db.query(ResumoMunZona).count()
 
-    anos_vsec = db.query(VotoSecao.ano).distinct()
-    anos_mz = db.query(ResumoMunZona.ano).distinct()
-
-    anos = sorted({a[0] for a in anos_vsec if a[0]} | {a[0] for a in anos_mz if a[0]})
+    anos = (
+        db.query(VotoCandidatoMunZona.ano)
+        .distinct()
+        .order_by(VotoCandidatoMunZona.ano)
+        .all()
+    )
+    anos = [a[0] for a in anos]
 
     return EstatisticasOut(
         total_linhas_votos_secao=total_secao,
-        total_linhas_resumo_munzona=total_mz,
+        total_linhas_resumo_munzona=total_munzona,
         anos_disponiveis=anos,
     )
 
 
-# =============================
-# MAPA / LOCAIS (USA SOMENTE VOTACAO_SECAO)
-# =============================
+# ==============================================================================
+# ENDPOINT — MAPA POR LOCAIS
+# ==============================================================================
 
-@app.get("/mapa/locais", response_model=List[LocalMapaOut])
-def mapa_locais(
-    ano: Optional[str] = Query(None),
-    uf: Optional[str] = Query(None),
-    cd_municipio: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(None),
-    ds_cargo: Optional[str] = Query(None),
-    limit: int = Query(1000, ge=1, le=10000),
+@app.get("/votos/localizacao", response_model=list[LocalMapaOut])
+def votos_localizacao(
+    ano: str = Query(...),
+    uf: str = Query(...),
     db: Session = Depends(get_db),
 ):
-    q = db.query(
-        VotoSecao.ano.label("ano"),
-        VotoSecao.uf.label("uf"),
-        VotoSecao.cd_municipio,
-        VotoSecao.nm_municipio,
-        VotoSecao.nr_zona,
-        VotoSecao.nr_secao,
-        VotoSecao.nr_local_votacao,
-        VotoSecao.nm_local_votacao,
-        VotoSecao.endereco_local,
-        VotoSecao.ds_cargo,
-        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    q = (
+        db.query(
+            VotoSecao.ano,
+            VotoSecao.uf,
+            VotoSecao.cd_municipio,
+            VotoSecao.nm_municipio,
+            VotoSecao.nr_zona,
+            VotoSecao.nr_secao,
+            VotoSecao.nr_local_votacao,
+            VotoSecao.nm_local_votacao,
+            VotoSecao.endereco_local,
+            VotoSecao.ds_cargo,
+            func.sum(VotoSecao.qt_votos).label("total_votos"),
+        )
+        .filter(VotoSecao.ano == ano)
+        .filter(VotoSecao.uf == uf)
+        .group_by(
+            VotoSecao.ano, VotoSecao.uf, VotoSecao.cd_municipio, VotoSecao.nm_municipio,
+            VotoSecao.nr_zona, VotoSecao.nr_secao, VotoSecao.nr_local_votacao,
+            VotoSecao.nm_local_votacao, VotoSecao.endereco_local, VotoSecao.ds_cargo
+        )
+        .order_by(func.sum(VotoSecao.qt_votos).desc())
     )
-
-    if ano:
-        q = q.filter(VotoSecao.ano == ano)
-    if uf:
-        q = q.filter(VotoSecao.uf == uf)
-    if cd_municipio:
-        q = q.filter(VotoSecao.cd_municipio == cd_municipio)
-    if cd_cargo:
-        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
-    if ds_cargo:
-        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
-
-    q = q.group_by(
-        VotoSecao.ano,
-        VotoSecao.uf,
-        VotoSecao.cd_municipio,
-        VotoSecao.nm_municipio,
-        VotoSecao.nr_zona,
-        VotoSecao.nr_secao,
-        VotoSecao.nr_local_votacao,
-        VotoSecao.nm_local_votacao,
-        VotoSecao.endereco_local,
-        VotoSecao.ds_cargo,
-    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
-
-    rows = q.all()
 
     return [
         LocalMapaOut(
@@ -208,266 +129,32 @@ def mapa_locais(
             nm_local_votacao=r.nm_local_votacao,
             endereco_local=r.endereco_local,
             ds_cargo=r.ds_cargo,
-            total_votos=r.total_votos,
+            total_votos=r.total_votos
         )
-        for r in rows
+        for r in q.all()
     ]
 
 
-# =============================
-# AGREGAÇÕES POR SEÇÃO (VotoSecao)
-# =============================
+# ==============================================================================
+# ENDPOINT — CANDIDATOS (PRINCIPAL)
+# ==============================================================================
 
-@app.get("/votos/zona", response_model=List[VotoZonaOut])
-def votos_por_zona(
-    ano: Optional[str] = Query(None),
-    uf: Optional[str] = Query(None),
-    cd_municipio: Optional[str] = Query(None),
-    nr_zona: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(None),
-    ds_cargo: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db),
-):
-    q = db.query(
-        VotoSecao.ano.label("ano"),
-        VotoSecao.uf.label("uf"),
-        VotoSecao.cd_municipio,
-        VotoSecao.nm_municipio,
-        VotoSecao.nr_zona,
-        VotoSecao.ds_cargo,
-        func.sum(VotoSecao.qt_votos).label("total_votos"),
-    )
-
-    if ano:
-        q = q.filter(VotoSecao.ano == ano)
-    if uf:
-        q = q.filter(VotoSecao.uf == uf)
-    if cd_municipio:
-        q = q.filter(VotoSecao.cd_municipio == cd_municipio)
-    if nr_zona:
-        q = q.filter(VotoSecao.nr_zona == nr_zona)
-    if cd_cargo:
-        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
-    if ds_cargo:
-        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
-
-    q = q.group_by(
-        VotoSecao.ano,
-        VotoSecao.uf,
-        VotoSecao.cd_municipio,
-        VotoSecao.nm_municipio,
-        VotoSecao.nr_zona,
-        VotoSecao.ds_cargo,
-    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
-
-    rows = q.all()
-
-    return [
-        VotoZonaOut(
-            ano=r.ano,
-            uf=r.uf,
-            cd_municipio=r.cd_municipio,
-            nm_municipio=r.nm_municipio,
-            nr_zona=r.nr_zona,
-            ds_cargo=r.ds_cargo,
-            total_votos=r.total_votos,
-        )
-        for r in rows
-    ]
-
-
-@app.get("/votos/municipio", response_model=List[VotoMunicipioOut])
-def votos_por_municipio(
-    ano: Optional[str] = Query(None),
-    uf: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(None),
-    ds_cargo: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db),
-):
-    q = db.query(
-        VotoSecao.ano,
-        VotoSecao.uf,
-        VotoSecao.cd_municipio,
-        VotoSecao.nm_municipio,
-        VotoSecao.ds_cargo,
-        func.sum(VotoSecao.qt_votos).label("total_votos"),
-    )
-
-    if ano:
-        q = q.filter(VotoSecao.ano == ano)
-    if uf:
-        q = q.filter(VotoSecao.uf == uf)
-    if cd_cargo:
-        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
-    if ds_cargo:
-        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
-
-    q = q.group_by(
-        VotoSecao.ano,
-        VotoSecao.uf,
-        VotoSecao.cd_municipio,
-        VotoSecao.nm_municipio,
-        VotoSecao.ds_cargo,
-    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
-
-    rows = q.all()
-
-    return [
-        VotoMunicipioOut(
-            ano=r.ano,
-            uf=r.uf,
-            cd_municipio=r.cd_municipio,
-            nm_municipio=r.nm_municipio,
-            ds_cargo=r.ds_cargo,
-            total_votos=r.total_votos,
-        )
-        for r in rows
-    ]
-
-
-@app.get("/votos/cargo", response_model=List[VotoCargoOut])
-def votos_por_cargo(
-    ano: Optional[str] = Query(None),
-    uf: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
-):
-    q = db.query(
-        VotoSecao.ano,
-        VotoSecao.ds_cargo,
-        func.sum(VotoSecao.qt_votos).label("total_votos"),
-    )
-
-    if ano:
-        q = q.filter(VotoSecao.ano == ano)
-    if uf:
-        q = q.filter(VotoSecao.uf == uf)
-
-    q = q.group_by(
-        VotoSecao.ano,
-        VotoSecao.ds_cargo,
-    ).order_by(func.sum(VotoSecao.qt_votos).desc())
-
-    rows = q.all()
-
-    return [
-        VotoCargoOut(
-            ano=r.ano,
-            ds_cargo=r.ds_cargo,
-            total_votos=r.total_votos,
-        )
-        for r in rows
-    ]
-
-
-# =============================
-# AGREGAÇÕES USANDO VOTACAO_CANDIDATO_MUNZONA
-# =============================
-
-@app.get("/votos/totais", response_model=List[VotoTotalOut])
-def votos_totais(
-    ano: Optional[str] = Query(None),
-    uf: Optional[str] = Query(None),
-    cd_municipio: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(None),
-    ds_cargo: Optional[str] = Query(None),
-    nr_candidato: Optional[str] = Query(None),
-    sg_partido: Optional[str] = Query(None),
-    ds_sit_tot_turno: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=2000),
-    db: Session = Depends(get_db),
-):
-    voto_col_name = _get_voto_col(db)
-    voto_attr = getattr(VotoCandidatoMunZona, voto_col_name)
-
-    q = db.query(
-        VotoCandidatoMunZona.ano.label("ano"),
-        VotoCandidatoMunZona.uf.label("uf"),
-        VotoCandidatoMunZona.cd_municipio,
-        VotoCandidatoMunZona.nm_municipio,
-        VotoCandidatoMunZona.cd_cargo,
-        VotoCandidatoMunZona.ds_cargo,
-        VotoCandidatoMunZona.nr_votavel,
-        VotoCandidatoMunZona.nm_votavel,
-        VotoCandidatoMunZona.sg_partido,
-        VotoCandidatoMunZona.ds_sit_tot_turno,
-        func.sum(voto_attr).label("total_votos"),
-    )
-
-    if ano:
-        q = q.filter(VotoCandidatoMunZona.ano == ano)
-    if uf:
-        q = q.filter(VotoCandidatoMunZona.uf == uf)
-    if cd_municipio:
-        q = q.filter(VotoCandidatoMunZona.cd_municipio == cd_municipio)
-    if cd_cargo:
-        q = q.filter(VotoCandidatoMunZona.cd_cargo == cd_cargo)
-    if ds_cargo:
-        q = q.filter(VotoCandidatoMunZona.ds_cargo == ds_cargo)
-    if nr_candidato:
-        q = q.filter(VotoCandidatoMunZona.nr_votavel == nr_candidato)
-    if sg_partido:
-        q = q.filter(VotoCandidatoMunZona.sg_partido == sg_partido)
-    if ds_sit_tot_turno:
-        q = q.filter(VotoCandidatoMunZona.ds_sit_tot_turno == ds_sit_tot_turno)
-
-    q = q.group_by(
-        VotoCandidatoMunZona.ano,
-        VotoCandidatoMunZona.uf,
-        VotoCandidatoMunZona.cd_municipio,
-        VotoCandidatoMunZona.nm_municipio,
-        VotoCandidatoMunZona.cd_cargo,
-        VotoCandidatoMunZona.ds_cargo,
-        VotoCandidatoMunZona.nr_votavel,
-        VotoCandidatoMunZona.nm_votavel,
-        VotoCandidatoMunZona.sg_partido,
-        VotoCandidatoMunZona.ds_sit_tot_turno,
-    ).order_by(
-        func.sum(voto_attr).desc()
-    ).limit(limit)
-
-    rows = q.all()
-
-    return [
-        VotoTotalOut(
-            ano=r.ano,
-            nr_turno=None,
-            uf=r.uf,
-            cd_municipio=r.cd_municipio,
-            nm_municipio=r.nm_municipio,
-            cd_cargo=r.cd_cargo,
-            ds_cargo=r.ds_cargo,
-            nr_candidato=r.nr_votavel,
-            nm_candidato=r.nm_votavel,
-            nm_urna_candidato=None,
-            sg_partido=r.sg_partido,
-            total_votos=r.total_votos,
-            ds_sit_tot_turno=r.ds_sit_tot_turno,
-        )
-        for r in rows
-    ]
-
-
-@app.get("/candidatos", response_model=List[VotoTotalOut])
+@app.get("/candidatos", response_model=list[VotoTotalOut])
 def candidatos(
-    ano: Optional[str] = Query(None),
-    uf: Optional[str] = Query(None),
-    cd_municipio: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(None),
-    ds_cargo: Optional[str] = Query(None),
+    ano: str = Query(...),
+    uf: str = Query(...),
+    cd_municipio: str | None = None,
+    cd_cargo: str | None = None,
     limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
     """
-    Lista candidatos com seus totais.
-    Agora usa a coluna de votos detectada dinamicamente
-    e não quebra se o nome mudar.
+    Consulta candidatos usando votacao_candidato_munzona
+    com colunas EXACTAS solicitadas:
+    NM_URNA, NM_CAND, NR_CANDI, SG_PARTIDO, SG_UF, NM_MUNIC, QT_VOTOS, DS_SIT_TOT_TURNO
     """
-    try:
-        voto_col_name = _get_voto_col(db)
-        voto_attr = getattr(VotoCandidatoMunZona, voto_col_name)
 
+    try:
         q = db.query(
             VotoCandidatoMunZona.ano.label("ano"),
             VotoCandidatoMunZona.uf.label("uf"),
@@ -475,23 +162,22 @@ def candidatos(
             VotoCandidatoMunZona.nm_municipio,
             VotoCandidatoMunZona.cd_cargo,
             VotoCandidatoMunZona.ds_cargo,
-            VotoCandidatoMunZona.nr_votavel,
-            VotoCandidatoMunZona.nm_votavel,
+            VotoCandidatoMunZona.nr_candidato,
+            VotoCandidatoMunZona.nm_candidato,
+            VotoCandidatoMunZona.nm_urna_candidato,
             VotoCandidatoMunZona.sg_partido,
             VotoCandidatoMunZona.ds_sit_tot_turno,
-            func.sum(voto_attr).label("total_votos"),
+            func.sum(VotoCandidatoMunZona.qt_votos).label("total_votos"),
+        ).filter(
+            VotoCandidatoMunZona.ano == ano,
+            VotoCandidatoMunZona.uf == uf
         )
 
-        if ano:
-            q = q.filter(VotoCandidatoMunZona.ano == ano)
-        if uf:
-            q = q.filter(VotoCandidatoMunZona.uf == uf)
         if cd_municipio:
             q = q.filter(VotoCandidatoMunZona.cd_municipio == cd_municipio)
+
         if cd_cargo:
             q = q.filter(VotoCandidatoMunZona.cd_cargo == cd_cargo)
-        if ds_cargo:
-            q = q.filter(VotoCandidatoMunZona.ds_cargo == ds_cargo)
 
         q = q.group_by(
             VotoCandidatoMunZona.ano,
@@ -500,12 +186,13 @@ def candidatos(
             VotoCandidatoMunZona.nm_municipio,
             VotoCandidatoMunZona.cd_cargo,
             VotoCandidatoMunZona.ds_cargo,
-            VotoCandidatoMunZona.nr_votavel,
-            VotoCandidatoMunZona.nm_votavel,
+            VotoCandidatoMunZona.nr_candidato,
+            VotoCandidatoMunZona.nm_candidato,
+            VotoCandidatoMunZona.nm_urna_candidato,
             VotoCandidatoMunZona.sg_partido,
             VotoCandidatoMunZona.ds_sit_tot_turno,
         ).order_by(
-            func.sum(voto_attr).desc()
+            func.sum(VotoCandidatoMunZona.qt_votos).desc()
         ).limit(limit)
 
         rows = q.all()
@@ -519,40 +206,42 @@ def candidatos(
                 nm_municipio=r.nm_municipio,
                 cd_cargo=r.cd_cargo,
                 ds_cargo=r.ds_cargo,
-                nr_candidato=r.nr_votavel,
-                nm_candidato=r.nm_votavel,
-                nm_urna_candidato=None,
+                nr_candidato=r.nr_candidato,
+                nm_candidato=r.nm_candidato,
+                nm_urna_candidato=r.nm_urna_candidato,
                 sg_partido=r.sg_partido,
                 total_votos=r.total_votos,
-                ds_sit_tot_turno=r.ds_sit_tot_turno,
+                ds_sit_tot_turno=r.ds_sit_tot_turno
             )
             for r in rows
         ]
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro na query candidatos: {e}")
 
 
-@app.get("/partidos", response_model=List[PartidoOut])
+# ==============================================================================
+# ENDPOINT — PARTIDOS
+# ==============================================================================
+
+@app.get("/partidos", response_model=list[PartidoOut])
 def partidos(
-    ano: Optional[str] = Query(None),
-    uf: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=2000),
+    ano: str = Query(...),
+    uf: str = Query(None),
+    cd_cargo: str | None = None,
     db: Session = Depends(get_db),
 ):
-    voto_col_name = _get_voto_col(db)
-    voto_attr = getattr(VotoCandidatoMunZona, voto_col_name)
-
     q = db.query(
         VotoCandidatoMunZona.sg_partido,
+        func.sum(VotoCandidatoMunZona.qt_votos).label("total_votos"),
         VotoCandidatoMunZona.ano,
-        func.sum(voto_attr).label("total_votos"),
-    ).filter(VotoCandidatoMunZona.sg_partido.isnot(None))
+    ).filter(
+        VotoCandidatoMunZona.ano == ano
+    )
 
-    if ano:
-        q = q.filter(VotoCandidatoMunZona.ano == ano)
     if uf:
         q = q.filter(VotoCandidatoMunZona.uf == uf)
+
     if cd_cargo:
         q = q.filter(VotoCandidatoMunZona.cd_cargo == cd_cargo)
 
@@ -560,8 +249,8 @@ def partidos(
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ano,
     ).order_by(
-        func.sum(voto_attr).desc()
-    ).limit(limit)
+        func.sum(VotoCandidatoMunZona.qt_votos).desc()
+    )
 
     rows = q.all()
 
@@ -575,146 +264,90 @@ def partidos(
     ]
 
 
-@app.get("/ranking/partidos", response_model=List[RankingPartidosOut])
+# ==============================================================================
+# ENDPOINT — RANKING DE PARTIDOS
+# ==============================================================================
+
+@app.get("/ranking/partidos", response_model=list[RankingPartidosOut])
 def ranking_partidos(
-    ano: Optional[str] = Query(None),
-    uf: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(None),
-    limit: int = Query(30, ge=1, le=200),
+    ano: str = Query(...),
+    uf: str = None,
+    cd_cargo: str | None = None,
     db: Session = Depends(get_db),
 ):
-    voto_col_name = _get_voto_col(db)
-    voto_attr = getattr(VotoCandidatoMunZona, voto_col_name)
-
     q = db.query(
         VotoCandidatoMunZona.sg_partido,
-        func.sum(voto_attr).label("total_votos"),
-    ).filter(VotoCandidatoMunZona.sg_partido.isnot(None))
+        func.sum(VotoCandidatoMunZona.qt_votos).label("total_votos"),
+    ).filter(VotoCandidatoMunZona.ano == ano)
 
-    if ano:
-        q = q.filter(VotoCandidatoMunZona.ano == ano)
     if uf:
         q = q.filter(VotoCandidatoMunZona.uf == uf)
     if cd_cargo:
         q = q.filter(VotoCandidatoMunZona.cd_cargo == cd_cargo)
 
     q = q.group_by(
-        VotoCandidatoMunZona.sg_partido,
+        VotoCandidatoMunZona.sg_partido
     ).order_by(
-        func.sum(voto_attr).desc()
-    ).limit(limit)
-
-    rows = q.all()
+        func.sum(VotoCandidatoMunZona.qt_votos).desc()
+    )
 
     return [
         RankingPartidosOut(
             sg_partido=r.sg_partido,
-            total_votos=r.total_votos,
+            total_votos=r.total_votos
         )
-        for r in rows
+        for r in q.all()
     ]
 
 
-# =============================
-# UPLOAD / RELOAD / CLEAR
-# =============================
+# ==============================================================================
+# UPLOAD CSV E ZIP
+# ==============================================================================
 
 @app.post("/upload", response_model=UploadResponse)
-async def upload_csv(
-    tipo: str = Query(
-        ...,
-        pattern="^(secao|munzona)$",
-        description="secao -> VOTACAO_SECAO, munzona -> DETALHE_VOTACAO_MUNZONA",
-    ),
-    file: UploadFile = File(...),
-):
-    filename = file.filename
+def upload_csv(file: UploadFile = File(...)):
+    save_path = f"{UPLOAD_DIR}/{file.filename}"
 
-    if not filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Envie um arquivo .csv")
+    with open(save_path, "wb") as f:
+        f.write(file.file.read())
 
-    dest_path = Path(UPLOAD_DIR) / filename
-    with dest_path.open("wb") as f:
-        content = await file.read()
-        f.write(content)
-
-    try:
-        if tipo == "secao":
-            linhas = ingest_votacao_secao(dest_path)
-        else:
-            linhas = ingest_detalhe_munzona(dest_path)
-    except Exception as e:
-        dest_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Erro ao processar CSV: {str(e)}")
-
-    return UploadResponse(
-        mensagem=f"Arquivo {filename} importado com sucesso",
-        linhas_importadas=linhas,
-    )
+    linhas = processar_csv(save_path)
+    return UploadResponse(mensagem="Upload OK", linhas_importadas=linhas)
 
 
 @app.post("/upload-zip", response_model=UploadResponse)
-async def upload_zip(file: UploadFile = File(...)):
-    filename = file.filename
+def upload_zip(file: UploadFile = File(...)):
+    save_path = f"{UPLOAD_DIR}/{file.filename}"
 
-    if not filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Envie um arquivo .zip")
+    with open(save_path, "wb") as f:
+        f.write(file.file.read())
 
-    zip_path = Path(UPLOAD_DIR) / filename
-    with zip_path.open("wb") as f:
-        content = await file.read()
-        f.write(content)
-
-    extracted_dir = Path(UPLOAD_DIR) / (filename + "_unzipped")
-    if extracted_dir.exists():
-        shutil.rmtree(extracted_dir)
-    extracted_dir.mkdir(parents=True, exist_ok=True)
-
-    total_linhas = 0
-
-    try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(extracted_dir)
-
-        for path in extracted_dir.rglob("*.csv"):
-            name_upper = path.name.upper()
-            if "SECAO" in name_upper:
-                total_linhas += ingest_votacao_secao(path)
-            elif "MUNZONA" in name_upper:
-                total_linhas += ingest_detalhe_munzona(path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao processar ZIP: {str(e)}")
-    finally:
-        zip_path.unlink(missing_ok=True)
-        shutil.rmtree(extracted_dir, ignore_errors=True)
-
-    return UploadResponse(
-        mensagem=f"ZIP {filename} importado com sucesso",
-        linhas_importadas=total_linhas,
-    )
+    linhas = processar_zip(save_path)
+    return UploadResponse(mensagem="ZIP processado", linhas_importadas=linhas)
 
 
-@app.post("/reload", response_model=UploadResponse)
-def reload_arquivos_existentes():
-    try:
-        total = ingest_all()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro no reload: {e}")
-
-    return UploadResponse(
-        mensagem="Reload concluído com sucesso",
-        linhas_importadas=total,
-    )
-
+# ==============================================================================
+# LIMPAR VOLUME
+# ==============================================================================
 
 @app.post("/clear-volume")
 def clear_volume():
-    for path in Path(UPLOAD_DIR).glob("*"):
-        if path.is_file():
-            path.unlink()
-        else:
-            shutil.rmtree(path, ignore_errors=True)
+    for f in os.listdir(UPLOAD_DIR):
+        os.remove(f"{UPLOAD_DIR}/{f}")
+    return {"mensagem": "Volume limpo"}
 
-    clear_all_data()
 
-    return {"mensagem": "Volume e dados de votos apagados com sucesso"}
+# ==============================================================================
+# RELOAD
+# ==============================================================================
+
+@app.post("/reload")
+def reload_db():
+    total = 0
+    for f in os.listdir(UPLOAD_DIR):
+        if f.endswith(".csv"):
+            total += processar_csv(f"{UPLOAD_DIR}/{f}")
+        elif f.endswith(".zip"):
+            total += processar_zip(f"{UPLOAD_DIR}/{f}")
+
+    return {"mensagem": "Reload completo", "linhas_importadas": total}

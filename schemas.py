@@ -55,7 +55,8 @@ class VotoCargoOut(BaseModel):
 class VotoTotalOut(BaseModel):
     # Campos chave para pesquisa/ranking
     ano: Optional[str]
-    nr_turno: Optional[int] = None   # tabela votacao_candidato_munzona atual não tem, então fica None
+    nr_turno: Optional[int] = None
+
     uf: Optional[str]
     cd_municipio: Optional[str] = None
     nm_municipio: Optional[str] = None
