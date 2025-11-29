@@ -81,3 +81,20 @@ class EstatisticasOut(BaseModel):
 class UploadResponse(BaseModel):
     mensagem: str
     linhas_importadas: int
+
+
+class LocalMapaOut(BaseModel):
+    ano: Optional[str]
+    uf: Optional[str]
+    cd_municipio: Optional[str]
+    nm_municipio: Optional[str]
+    nr_zona: Optional[str]
+    nr_secao: Optional[str]
+    nr_local_votacao: Optional[str]
+    nm_local_votacao: Optional[str]
+    endereco_local: Optional[str]
+    ds_cargo: Optional[str]
+    total_votos: int
+
+    class Config:
+        from_attributes = True

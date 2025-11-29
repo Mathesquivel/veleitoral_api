@@ -35,6 +35,7 @@ from schemas import (
     RankingPartidosOut,
     EstatisticasOut,
     UploadResponse,
+    LocalMapaOut,
 )
 
 app = FastAPI(title="API TSE - VELEITORAL")
@@ -82,6 +83,10 @@ def votos_totais(
     ano: Optional[str] = Query(None),
     uf: Optional[str] = Query(None),
     cd_municipio: Optional[str] = Query(None),
+    cd_cargo: Optional[str] = Query(
+        None,
+        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
+    ),
     ds_cargo: Optional[str] = Query(None),
     nr_candidato: Optional[str] = Query(None, description="Número do votável"),
     sg_partido: Optional[str] = Query(None),
@@ -109,6 +114,8 @@ def votos_totais(
         q = q.filter(VotoSecao.uf == uf)
     if cd_municipio:
         q = q.filter(VotoSecao.cd_municipio == cd_municipio)
+    if cd_cargo:
+        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
     if ds_cargo:
         q = q.filter(VotoSecao.ds_cargo == ds_cargo)
     if nr_candidato:
@@ -151,6 +158,10 @@ def votos_por_zona(
     uf: Optional[str] = Query(None),
     cd_municipio: Optional[str] = Query(None),
     nr_zona: Optional[str] = Query(None),
+    cd_cargo: Optional[str] = Query(
+        None,
+        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
+    ),
     ds_cargo: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
@@ -179,6 +190,8 @@ def votos_por_zona(
         q = q.filter(VotoSecao.cd_municipio == cd_municipio)
     if nr_zona:
         q = q.filter(VotoSecao.nr_zona == nr_zona)
+    if cd_cargo:
+        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
     if ds_cargo:
         q = q.filter(VotoSecao.ds_cargo == ds_cargo)
 
@@ -217,6 +230,10 @@ def votos_por_zona(
 def votos_por_municipio(
     ano: Optional[str] = Query(None),
     uf: Optional[str] = Query(None),
+    cd_cargo: Optional[str] = Query(
+        None,
+        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
+    ),
     ds_cargo: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
@@ -237,6 +254,8 @@ def votos_por_municipio(
         q = q.filter(VotoSecao.ano == ano)
     if uf:
         q = q.filter(VotoSecao.uf == uf)
+    if cd_cargo:
+        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
     if ds_cargo:
         q = q.filter(VotoSecao.ds_cargo == ds_cargo)
 
@@ -308,6 +327,11 @@ def votos_por_cargo(
 def candidatos(
     ano: Optional[str] = Query(None),
     uf: Optional[str] = Query(None),
+    cd_municipio: Optional[str] = Query(None),
+    cd_cargo: Optional[str] = Query(
+        None,
+        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
+    ),
     ds_cargo: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
@@ -331,6 +355,10 @@ def candidatos(
         q = q.filter(VotoSecao.ano == ano)
     if uf:
         q = q.filter(VotoSecao.uf == uf)
+    if cd_municipio:
+        q = q.filter(VotoSecao.cd_municipio == cd_municipio)
+    if cd_cargo:
+        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
     if ds_cargo:
         q = q.filter(VotoSecao.ds_cargo == ds_cargo)
 
@@ -366,6 +394,10 @@ def candidatos(
 @app.get("/partidos", response_model=List[PartidoOut])
 def partidos(
     ano: Optional[str] = Query(None),
+    cd_cargo: Optional[str] = Query(
+        None,
+        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
+    ),
     db: Session = Depends(get_db),
 ):
     """
@@ -379,6 +411,8 @@ def partidos(
 
     if ano:
         q = q.filter(VotoSecao.ano == ano)
+    if cd_cargo:
+        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
 
     q = q.group_by(
         VotoSecao.sg_partido,
@@ -400,6 +434,10 @@ def partidos(
 @app.get("/ranking/partidos", response_model=List[RankingPartidosOut])
 def ranking_partidos(
     ano: Optional[str] = Query(None),
+    cd_cargo: Optional[str] = Query(
+        None,
+        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
+    ),
     limit: int = Query(30, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
@@ -413,6 +451,8 @@ def ranking_partidos(
 
     if ano:
         q = q.filter(VotoSecao.ano == ano)
+    if cd_cargo:
+        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
 
     q = q.group_by(
         VotoSecao.sg_partido,
@@ -423,6 +463,87 @@ def ranking_partidos(
     return [
         RankingPartidosOut(
             sg_partido=r.sg_partido,
+            total_votos=r.total_votos,
+        )
+        for r in rows
+    ]
+
+
+# =============================
+# MAPA ELEITORAL (SEÇÃO)
+# =============================
+
+@app.get("/mapa/locais", response_model=List[LocalMapaOut])
+def mapa_locais(
+    ano: Optional[str] = Query(None),
+    uf: Optional[str] = Query(None),
+    cd_municipio: Optional[str] = Query(None),
+    cd_cargo: Optional[str] = Query(
+        None,
+        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
+    ),
+    ds_cargo: Optional[str] = Query(None),
+    limit: int = Query(1000, ge=1, le=10000),
+    db: Session = Depends(get_db),
+):
+    """
+    Locais de votação para o mapa:
+    agrega votos por local/zona/seção (a partir de VotoSecao).
+    """
+    q = db.query(
+        VotoSecao.ano.label("ano"),
+        VotoSecao.uf.label("uf"),
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.nr_zona,
+        VotoSecao.nr_secao,
+        VotoSecao.nr_local_votacao,
+        VotoSecao.nm_local_votacao,
+        VotoSecao.endereco_local,
+        VotoSecao.ds_cargo,
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    )
+
+    if ano:
+        q = q.filter(VotoSecao.ano == ano)
+    if uf:
+        q = q.filter(VotoSecao.uf == uf)
+    if cd_municipio:
+        q = q.filter(VotoSecao.cd_municipio == cd_municipio)
+    if cd_cargo:
+        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
+    if ds_cargo:
+        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
+
+    q = q.group_by(
+        VotoSecao.ano,
+        VotoSecao.uf,
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.nr_zona,
+        VotoSecao.nr_secao,
+        VotoSecao.nr_local_votacao,
+        VotoSecao.nm_local_votacao,
+        VotoSecao.endereco_local,
+        VotoSecao.ds_cargo,
+    ).order_by(
+        func.sum(VotoSecao.qt_votos).desc()
+    ).limit(limit)
+
+    rows = q.all()
+
+    return [
+        LocalMapaOut(
+            ano=r.ano,
+            uf=r.uf,
+            cd_municipio=r.cd_municipio,
+            nm_municipio=r.nm_municipio,
+            nr_zona=r.nr_zona,
+            nr_secao=r.nr_secao,
+            nr_local_votacao=r.nr_local_votacao,
+            nm_local_votacao=r.nm_local_votacao,
+            endereco_local=r.endereco_local,
+            ds_cargo=r.ds_cargo,
             total_votos=r.total_votos,
         )
         for r in rows
