@@ -1,132 +1,142 @@
 # models.py
-from sqlalchemy import Column, Integer, BigInteger, String, Text, DateTime
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    BigInteger,
+    Index,
+    DateTime,
+)
 from sqlalchemy.sql import func
 
 from database import Base
 
 
-# ============================
-# TABELA DE VOTOS POR SEÇÃO
-# ============================
-
 class VotoSecao(Base):
+    """
+    Tabela baseada no arquivo VOTACAO_SECAO_<ANO>_<UF>.
+    Usada para mapa, votos por seção/zona/local.
+    """
     __tablename__ = "votos_secao"
 
-    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
 
-    ano = Column(String)                     # ANO_ELEICAO
-    nr_turno = Column(Integer, nullable=True)
+    ano = Column(String(4), index=True)            # ANO_ELEICAO
+    nr_turno = Column(Integer, index=True)         # NR_TURNO
 
-    uf = Column(String(2))                   # SG_UF
-    cd_municipio = Column(String)
-    nm_municipio = Column(String)
+    uf = Column(String(2), index=True)             # SG_UF
+    cd_municipio = Column(String(10), index=True)  # CD_MUNICIPIO
+    nm_municipio = Column(String(150))             # NM_MUNICIPIO
 
-    nr_zona = Column(String)
-    nr_secao = Column(String)
+    nr_zona = Column(String(10), index=True)       # NR_ZONA
+    nr_secao = Column(String(10), index=True)      # NR_SECAO
 
-    nr_local_votacao = Column(String)
-    nm_local_votacao = Column(String)
-    endereco_local = Column(Text)
+    nr_local_votacao = Column(String(20), nullable=True)   # NR_LOCAL_VOTACAO
+    nm_local_votacao = Column(String(200), nullable=True)  # NM_LOCAL_VOTACAO
+    endereco_local = Column(String(500), nullable=True)    # DS_LOCAL_VOTACAO_ENDERECO
 
-    cd_cargo = Column(String)
-    ds_cargo = Column(String)
+    cd_cargo = Column(String(10), index=True, nullable=True)   # CD_CARGO
+    ds_cargo = Column(String(100), index=True)                 # DS_CARGO
 
-    nr_votavel = Column(String)
-    nm_votavel = Column(String)
+    nr_votavel = Column(String(20), index=True)    # NR_VOTAVEL (nº candidato/partido)
+    nm_votavel = Column(String(200))               # NM_VOTAVEL
 
-    nr_partido = Column(String)
-    sg_partido = Column(String)
+    nr_partido = Column(String(10), nullable=True)          # NR_PARTIDO
+    sg_partido = Column(String(20), index=True, nullable=True)  # SG_PARTIDO
 
-    qt_votos = Column(BigInteger)
+    qt_votos = Column(BigInteger)                  # QT_VOTOS
 
+    __table_args__ = (
+        Index("ix_vsec_ano_uf_mun_zona", "ano", "uf", "cd_municipio", "nr_zona"),
+        Index("ix_vsec_ano_uf_mun_secao", "ano", "uf", "cd_municipio", "nr_secao"),
+        Index("ix_vsec_candidato", "ano", "ds_cargo", "nr_votavel"),
+        Index("ix_vsec_partido", "ano", "sg_partido"),
+    )
 
-# ============================
-# TABELA DE RESUMO MUNZONA
-# ============================
 
 class ResumoMunZona(Base):
+    """
+    Tabela baseada no arquivo DETALHE_VOTACAO_MUNZONA_<ANO>_<UF/BR>.
+    Totais por município+zona+cargo (aptos, comparecimento, abstenções, etc.).
+    """
     __tablename__ = "resumo_munzona"
 
-    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
 
-    ano = Column(String)
-    nr_turno = Column(Integer, nullable=True)
+    ano = Column(String(4), index=True)
+    nr_turno = Column(Integer, index=True)
 
-    uf = Column(String(2))
-    cd_municipio = Column(String)
-    nm_municipio = Column(String)
+    uf = Column(String(2), index=True)
+    cd_municipio = Column(String(10), index=True)
+    nm_municipio = Column(String(150))
 
-    nr_zona = Column(String)
+    nr_zona = Column(String(10), index=True)
 
-    cd_cargo = Column(String)
-    ds_cargo = Column(String)
+    cd_cargo = Column(String(10), index=True)
+    ds_cargo = Column(String(100), index=True)
 
-    qt_aptos = Column(BigInteger)
-    qt_total_secoes = Column(BigInteger)
-    qt_comparecimento = Column(BigInteger)
-    qt_abstencoes = Column(BigInteger)
+    qt_aptos = Column(BigInteger, nullable=True)
+    qt_total_secoes = Column(BigInteger, nullable=True)
+    qt_comparecimento = Column(BigInteger, nullable=True)
+    qt_abstencoes = Column(BigInteger, nullable=True)
 
-    qt_votos = Column(BigInteger)
-    qt_votos_nominais_validos = Column(BigInteger)
-    qt_votos_brancos = Column(BigInteger)
-    qt_total_votos_nulos = Column(BigInteger)
-    qt_total_votos_leg_validos = Column(BigInteger)
-    qt_votos_leg_validos = Column(BigInteger)
+    qt_votos = Column(BigInteger, nullable=True)
+    qt_votos_nominais_validos = Column(BigInteger, nullable=True)
+    qt_votos_brancos = Column(BigInteger, nullable=True)
+    qt_total_votos_nulos = Column(BigInteger, nullable=True)
+    qt_total_votos_leg_validos = Column(BigInteger, nullable=True)
+    qt_votos_leg_validos = Column(BigInteger, nullable=True)
+
+    __table_args__ = (
+        Index("ix_mz_ano_uf_mun_zona", "ano", "uf", "cd_municipio", "nr_zona"),
+        Index("ix_mz_ano_cargo", "ano", "ds_cargo"),
+    )
 
 
-# ============================
-# LOG DE IMPORTAÇÃO
-# ============================
+class CandidatoMeta(Base):
+    """
+    Tabela candidatos_meta (já existente no Postgres).
+    Usada para Ranking e Pesquisa de candidatos/partidos.
+    Assumindo colunas típicas de meta agregada:
+      - ano, uf, municipio, cargo, candidato, partido, total_votos
+    Ajuste os types/names se sua tabela real tiver diferenças.
+    """
+    __tablename__ = "candidatos_meta"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    ano = Column(String(4), index=True)
+    uf = Column(String(2), index=True)
+
+    cd_municipio = Column(String(10), index=True, nullable=True)
+    nm_municipio = Column(String(150), nullable=True)
+
+    cd_cargo = Column(String(10), index=True, nullable=True)
+    ds_cargo = Column(String(100), index=True, nullable=True)
+
+    nr_candidato = Column(String(20), index=True, nullable=True)
+    nm_candidato = Column(String(200), nullable=True)
+
+    sg_partido = Column(String(20), index=True, nullable=True)
+
+    total_votos = Column(BigInteger, nullable=True)
+
+    __table_args__ = (
+        Index("ix_cmeta_ano_uf_cargo", "ano", "uf", "ds_cargo"),
+        Index("ix_cmeta_candidato", "ano", "nr_candidato"),
+        Index("ix_cmeta_partido", "ano", "sg_partido"),
+    )
+
 
 class ImportLog(Base):
+    """
+    Log simples das importações (secao/munzona).
+    Só para controle.
+    """
     __tablename__ = "import_log"
 
-    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
-    tipo_arquivo = Column(String)       # "secao" ou "munzona"
-    nome_arquivo = Column(String)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tipo_arquivo = Column(String(20))       # 'secao' ou 'munzona'
+    nome_arquivo = Column(String(255))
     linhas_importadas = Column(BigInteger)
-    criado_em = Column(DateTime(timezone=True), server_default=func.now())
-
-
-# ============================================
-# TABELA votacao_candidato_munzona (Postgres)
-# ============================================
-
-class VotoCandidatoMunZona(Base):
-    """
-    Mapeia a tabela 'votacao_candidato_munzona' do Postgres,
-    usando EXATAMENTE os nomes de coluna que você listou:
-
-    - ANO_ELEICAO
-    - SG_UF
-    - NM_MUNIC
-    - NR_CANDI
-    - NM_URNA
-    - NM_CAND
-    - SG_PARTIDO
-    - QT_VOTOS
-    - DS_SIT_TOT_TURNO
-    """
-
-    __tablename__ = "votacao_candidato_munzona"
-
-    # chaves lógicas (podem não estar como PK no banco, mas funcionam no ORM)
-    ano = Column("ANO_ELEICAO", String, primary_key=True)
-    uf = Column("SG_UF", String(2), primary_key=True)
-    nm_municipio = Column("NM_MUNIC", String, primary_key=True)
-
-    nr_candidato = Column("NR_CANDI", String, primary_key=True)
-
-    nm_urna_candidato = Column("NM_URNA", String)
-    nm_candidato = Column("NM_CAND", String)
-
-    sg_partido = Column("SG_PARTIDO", String)
-
-    qt_votos = Column("QT_VOTOS", BigInteger)
-
-    ds_sit_tot_turno = Column("DS_SIT_TOT_TURNO", String)
-
-    # campos adicionais comuns na base (se existirem no seu banco):
-    cd_municipio = Column("CD_MUNIC", String, nullable=True)
-    cd_cargo = Column("CD_CARGO", String, nullable=True)
-    ds_cargo = Column("DS_CARGO", String, nullable=True)
+    criado_em = Column(DateTime, server_default=func.now())
