@@ -95,9 +95,8 @@ class ImportLog(Base):
 class VotoCandidatoMunZona(Base):
     """
     Mapeia a tabela 'votacao_candidato_munzona' que já está no Postgres.
-
-    A coluna de votos é descoberta dinamicamente no main.py,
-    então não mapeamos ela aqui para evitar erro de coluna inexistente.
+    Não mapeamos a coluna de votos aqui, pois a API descobre
+    dinamicamente qual é (qt_votos, qt_votos_nominais etc.).
     """
 
     __tablename__ = "votacao_candidato_munzona"

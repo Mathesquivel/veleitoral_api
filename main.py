@@ -14,7 +14,7 @@ import zipfile
 import shutil
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func, inspect, text, literal_column
+from sqlalchemy import func, inspect, text
 
 from database import get_db
 from ingestor import (
@@ -49,54 +49,48 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 # =============================
+# FUNÇÃO AUXILIAR: COLUNA DE VOTOS
+# =============================
+
+def _get_voto_col(db: Session) -> str:
+    """
+    Detecta automaticamente qual é a coluna de votos
+    na tabela votacao_candidato_munzona.
+
+    Tenta, na ordem:
+    - qt_votos_nominais_validos
+    - qt_votos_nominais
+    - qt_votos_validos
+    - qt_votos
+    """
+    insp = inspect(db.bind)
+    cols = insp.get_columns("votacao_candidato_munzona")
+    col_names = [c["name"].lower() for c in cols]
+
+    candidatos = [
+        "qt_votos_nominais_validos",
+        "qt_votos_nominais",
+        "qt_votos_validos",
+        "qt_votos",
+    ]
+
+    for nome in candidatos:
+        if nome in col_names:
+            return nome
+
+    raise HTTPException(
+        status_code=500,
+        detail=f"Nenhuma coluna de votos encontrada em votacao_candidato_munzona. Colunas reais: {col_names}",
+    )
+
+
+# =============================
 # STARTUP
 # =============================
 
 @app.on_event("startup")
 def on_startup():
     init_db()
-
-
-# =============================
-# CONSTANTES / HELPERS
-# =============================
-
-# nomes possíveis de coluna de votos na votacao_candidato_munzona
-CANDIDATO_VOTOS_CANDIDATES = [
-    "qt_votos_nominais_validos",
-    "qt_votos_nominais",
-    "qt_votos",
-]
-
-
-def get_candidato_votos_column_name(db: Session) -> str:
-    """
-    Descobre dinamicamente qual é a coluna de votos na tabela
-    votacao_candidato_munzona. Isso evita erro 500 por coluna inexistente.
-    """
-    insp = inspect(db.bind)
-    try:
-        cols = insp.get_columns("votacao_candidato_munzona")
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Não consegui inspecionar a tabela votacao_candidato_munzona: {e}",
-        )
-
-    colnames = {c["name"].lower() for c in cols}
-
-    for candidato in CANDIDATO_VOTOS_CANDIDATES:
-        if candidato.lower() in colnames:
-            return candidato
-
-    raise HTTPException(
-        status_code=500,
-        detail=(
-            "Não encontrei coluna de votos na tabela votacao_candidato_munzona. "
-            f"Colunas testadas: {CANDIDATO_VOTOS_CANDIDATES}. "
-            f"Colunas disponíveis: {sorted(colnames)}"
-        ),
-    )
 
 
 # =============================
@@ -108,6 +102,23 @@ def debug_cols(db: Session = Depends(get_db)):
     insp = inspect(db.bind)
     cols = insp.get_columns("votacao_candidato_munzona")
     return {"columns": [c["name"] for c in cols]}
+
+
+@app.get("/debug/candidatos-amostra")
+def debug_candidatos_amostra(
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """
+    Retorna algumas linhas brutas da tabela votacao_candidato_munzona
+    para você ver quais anos, UFs, etc existem de verdade.
+    """
+    rows = db.query(VotoCandidatoMunZona).limit(limit).all()
+    out = []
+    for r in rows:
+        d = {k: v for k, v in r.__dict__.items() if not k.startswith("_")}
+        out.append(d)
+    return out
 
 
 # =============================
@@ -367,8 +378,8 @@ def votos_totais(
     limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
-    votos_col_name = get_candidato_votos_column_name(db)
-    votos_col = literal_column(votos_col_name)
+    voto_col_name = _get_voto_col(db)
+    voto_attr = getattr(VotoCandidatoMunZona, voto_col_name)
 
     q = db.query(
         VotoCandidatoMunZona.ano.label("ano"),
@@ -381,7 +392,7 @@ def votos_totais(
         VotoCandidatoMunZona.nm_votavel,
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ds_sit_tot_turno,
-        func.sum(votos_col).label("total_votos"),
+        func.sum(voto_attr).label("total_votos"),
     )
 
     if ano:
@@ -413,7 +424,7 @@ def votos_totais(
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ds_sit_tot_turno,
     ).order_by(
-        func.sum(votos_col).desc()
+        func.sum(voto_attr).desc()
     ).limit(limit)
 
     rows = q.all()
@@ -448,9 +459,14 @@ def candidatos(
     limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
+    """
+    Lista candidatos com seus totais.
+    Agora usa a coluna de votos detectada dinamicamente
+    e não quebra se o nome mudar.
+    """
     try:
-        votos_col_name = get_candidato_votos_column_name(db)
-        votos_col = literal_column(votos_col_name)
+        voto_col_name = _get_voto_col(db)
+        voto_attr = getattr(VotoCandidatoMunZona, voto_col_name)
 
         q = db.query(
             VotoCandidatoMunZona.ano.label("ano"),
@@ -463,7 +479,7 @@ def candidatos(
             VotoCandidatoMunZona.nm_votavel,
             VotoCandidatoMunZona.sg_partido,
             VotoCandidatoMunZona.ds_sit_tot_turno,
-            func.sum(votos_col).label("total_votos"),
+            func.sum(voto_attr).label("total_votos"),
         )
 
         if ano:
@@ -489,7 +505,7 @@ def candidatos(
             VotoCandidatoMunZona.sg_partido,
             VotoCandidatoMunZona.ds_sit_tot_turno,
         ).order_by(
-            func.sum(votos_col).desc()
+            func.sum(voto_attr).desc()
         ).limit(limit)
 
         rows = q.all()
@@ -512,9 +528,6 @@ def candidatos(
             )
             for r in rows
         ]
-    except HTTPException:
-        # repassa erro amigável se a coluna não for encontrada
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro na query candidatos: {e}")
 
@@ -527,13 +540,13 @@ def partidos(
     limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
-    votos_col_name = get_candidato_votos_column_name(db)
-    votos_col = literal_column(votos_col_name)
+    voto_col_name = _get_voto_col(db)
+    voto_attr = getattr(VotoCandidatoMunZona, voto_col_name)
 
     q = db.query(
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ano,
-        func.sum(votos_col).label("total_votos"),
+        func.sum(voto_attr).label("total_votos"),
     ).filter(VotoCandidatoMunZona.sg_partido.isnot(None))
 
     if ano:
@@ -547,7 +560,7 @@ def partidos(
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ano,
     ).order_by(
-        func.sum(votos_col).desc()
+        func.sum(voto_attr).desc()
     ).limit(limit)
 
     rows = q.all()
@@ -570,12 +583,12 @@ def ranking_partidos(
     limit: int = Query(30, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    votos_col_name = get_candidato_votos_column_name(db)
-    votos_col = literal_column(votos_col_name)
+    voto_col_name = _get_voto_col(db)
+    voto_attr = getattr(VotoCandidatoMunZona, voto_col_name)
 
     q = db.query(
         VotoCandidatoMunZona.sg_partido,
-        func.sum(votos_col).label("total_votos"),
+        func.sum(voto_attr).label("total_votos"),
     ).filter(VotoCandidatoMunZona.sg_partido.isnot(None))
 
     if ano:
@@ -588,7 +601,7 @@ def ranking_partidos(
     q = q.group_by(
         VotoCandidatoMunZona.sg_partido,
     ).order_by(
-        func.sum(votos_col).desc()
+        func.sum(voto_attr).desc()
     ).limit(limit)
 
     rows = q.all()
@@ -604,7 +617,6 @@ def ranking_partidos(
 
 # =============================
 # UPLOAD / RELOAD / CLEAR
-# (IGUAL AO QUE JÁ TÍNHAMOS)
 # =============================
 
 @app.post("/upload", response_model=UploadResponse)

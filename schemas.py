@@ -62,11 +62,9 @@ class VotoTotalOut(BaseModel):
     cd_cargo: Optional[str] = None
     ds_cargo: Optional[str] = None
 
-    # API continua falando em "candidato",
-    # mas internamente buscamos em NR_VOTAVEL / NM_VOTAVEL
     nr_candidato: Optional[str] = None
     nm_candidato: Optional[str] = None
-    nm_urna_candidato: Optional[str] = None  # não existe na tabela, então fica None
+    nm_urna_candidato: Optional[str] = None
     sg_partido: Optional[str] = None
 
     total_votos: int
