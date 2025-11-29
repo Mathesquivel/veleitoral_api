@@ -96,37 +96,32 @@ class VotoCandidatoMunZona(Base):
     """
     Mapeia a tabela 'votacao_candidato_munzona' que já está no Postgres.
 
-    ATENÇÃO: no seu banco unificado essa tabela NÃO tem a coluna nr_candidato,
-    por isso o modelo e as queries NÃO usam esse campo.
-
-    Colunas usadas pela API:
-    - ano
-    - uf
-    - cd_municipio
-    - nm_municipio
-    - cd_cargo
-    - ds_cargo
-    - nm_candidato
-    - nm_urna_candidato
-    - sg_partido
-    - qt_votos_nominais_validos
-    - ds_sit_tot_turno
+    Layout típico TSE (versão municipal 2018/2020/2024):
+    - ANO_ELEICAO          -> ano
+    - SG_UF                -> uf
+    - CD_MUNICIPIO         -> cd_municipio
+    - NM_MUNICIPIO         -> nm_municipio
+    - CD_CARGO             -> cd_cargo
+    - DS_CARGO             -> ds_cargo
+    - NR_VOTAVEL           -> nr_votavel
+    - NM_VOTAVEL           -> nm_votavel
+    - SG_PARTIDO           -> sg_partido
+    - QT_VOTOS_NOMINAIS_VALIDOS -> qt_votos_nominais_validos
+    - DS_SIT_TOT_TURNO     -> ds_sit_tot_turno
     """
 
     __tablename__ = "votacao_candidato_munzona"
 
-    # Chave composta lógica (não precisa existir PK no banco)
-    ano = Column(String, primary_key=True)          # ano
-    uf = Column(String(2), primary_key=True)        # uf
+    ano = Column(String, primary_key=True)
+    uf = Column(String(2), primary_key=True)
     cd_municipio = Column(String, primary_key=True)
     nm_municipio = Column(String)
 
     cd_cargo = Column(String, primary_key=True)
     ds_cargo = Column(String)
 
-    # IMPORTANTE: sem nr_candidato aqui
-    nm_candidato = Column(String)
-    nm_urna_candidato = Column(String)
+    nr_votavel = Column(String, primary_key=True)
+    nm_votavel = Column(String)
 
     sg_partido = Column(String)
 

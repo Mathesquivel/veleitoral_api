@@ -64,8 +64,8 @@ def on_startup():
 @app.get("/debug/cols")
 def debug_cols(db: Session = Depends(get_db)):
     """
-    Endpoint para listar os nomes REAIS das colunas
-    da tabela votacao_candidato_munzona no Postgres do Railway.
+    Endpoint temporário pra descobrir os nomes REAIS das colunas
+    da tabela votacao_candidato_munzona lá no Postgres do Railway.
     """
     insp = inspect(db.bind)
     cols = insp.get_columns("votacao_candidato_munzona")
@@ -78,6 +78,9 @@ def debug_cols(db: Session = Depends(get_db)):
 
 @app.get("/estatisticas", response_model=EstatisticasOut)
 def estatisticas(db: Session = Depends(get_db)):
+    """
+    Estatísticas gerais de linhas de votos de seção e resumo munzona.
+    """
     total_secao = db.query(func.count(VotoSecao.id)).scalar() or 0
     total_mz = db.query(func.count(ResumoMunZona.id)).scalar() or 0
 
@@ -107,6 +110,10 @@ def mapa_locais(
     limit: int = Query(1000, ge=1, le=10000),
     db: Session = Depends(get_db),
 ):
+    """
+    Locais de votação para o mapa:
+    agrega votos por local/zona/seção a partir de VotoSecao.
+    """
     q = db.query(
         VotoSecao.ano.label("ano"),
         VotoSecao.uf.label("uf"),
@@ -143,9 +150,7 @@ def mapa_locais(
         VotoSecao.nm_local_votacao,
         VotoSecao.endereco_local,
         VotoSecao.ds_cargo,
-    ).order_by(
-        func.sum(VotoSecao.qt_votos).desc()
-    ).limit(limit)
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
 
     rows = q.all()
 
@@ -182,6 +187,9 @@ def votos_por_zona(
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
+    """
+    Votos por ZONA, a partir de VotoSecao.
+    """
     q = db.query(
         VotoSecao.ano.label("ano"),
         VotoSecao.uf.label("uf"),
@@ -212,9 +220,7 @@ def votos_por_zona(
         VotoSecao.nm_municipio,
         VotoSecao.nr_zona,
         VotoSecao.ds_cargo,
-    ).order_by(
-        func.sum(VotoSecao.qt_votos).desc()
-    ).limit(limit)
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
 
     rows = q.all()
 
@@ -241,6 +247,9 @@ def votos_por_municipio(
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
+    """
+    Votos agregados por MUNICÍPIO, a partir de VotoSecao.
+    """
     q = db.query(
         VotoSecao.ano,
         VotoSecao.uf,
@@ -265,9 +274,7 @@ def votos_por_municipio(
         VotoSecao.cd_municipio,
         VotoSecao.nm_municipio,
         VotoSecao.ds_cargo,
-    ).order_by(
-        func.sum(VotoSecao.qt_votos).desc()
-    ).limit(limit)
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
 
     rows = q.all()
 
@@ -290,6 +297,9 @@ def votos_por_cargo(
     uf: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
+    """
+    Votos agregados por CARGO (a partir de VotoSecao).
+    """
     q = db.query(
         VotoSecao.ano,
         VotoSecao.ds_cargo,
@@ -304,9 +314,7 @@ def votos_por_cargo(
     q = q.group_by(
         VotoSecao.ano,
         VotoSecao.ds_cargo,
-    ).order_by(
-        func.sum(VotoSecao.qt_votos).desc()
-    )
+    ).order_by(func.sum(VotoSecao.qt_votos).desc())
 
     rows = q.all()
 
@@ -332,17 +340,19 @@ def votos_totais(
     cd_municipio: Optional[str] = Query(None),
     cd_cargo: Optional[str] = Query(None),
     ds_cargo: Optional[str] = Query(None),
+    nr_candidato: Optional[str] = Query(None),  # mapeia NR_VOTAVEL
     sg_partido: Optional[str] = Query(None),
     ds_sit_tot_turno: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
     """
-    Votos agregados por candidato, usando votacao_candidato_munzona.
+    Votos agregados por "candidato", usando Votacao_Candidato_Munzona.
     Usa QT_VOTOS_NOMINAIS_VALIDOS como total de votos.
 
-    IMPORTANTE: a tabela unificada não tem nr_candidato,
-    então não filtramos por esse campo.
+    Internamente:
+    - NR_VOTAVEL -> nr_candidato
+    - NM_VOTAVEL -> nm_candidato
     """
     q = db.query(
         VotoCandidatoMunZona.ano.label("ano"),
@@ -351,8 +361,8 @@ def votos_totais(
         VotoCandidatoMunZona.nm_municipio,
         VotoCandidatoMunZona.cd_cargo,
         VotoCandidatoMunZona.ds_cargo,
-        VotoCandidatoMunZona.nm_candidato,
-        VotoCandidatoMunZona.nm_urna_candidato,
+        VotoCandidatoMunZona.nr_votavel,
+        VotoCandidatoMunZona.nm_votavel,
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ds_sit_tot_turno,
         func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
@@ -368,6 +378,8 @@ def votos_totais(
         q = q.filter(VotoCandidatoMunZona.cd_cargo == cd_cargo)
     if ds_cargo:
         q = q.filter(VotoCandidatoMunZona.ds_cargo == ds_cargo)
+    if nr_candidato:
+        q = q.filter(VotoCandidatoMunZona.nr_votavel == nr_candidato)
     if sg_partido:
         q = q.filter(VotoCandidatoMunZona.sg_partido == sg_partido)
     if ds_sit_tot_turno:
@@ -380,8 +392,8 @@ def votos_totais(
         VotoCandidatoMunZona.nm_municipio,
         VotoCandidatoMunZona.cd_cargo,
         VotoCandidatoMunZona.ds_cargo,
-        VotoCandidatoMunZona.nm_candidato,
-        VotoCandidatoMunZona.nm_urna_candidato,
+        VotoCandidatoMunZona.nr_votavel,
+        VotoCandidatoMunZona.nm_votavel,
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ds_sit_tot_turno,
     ).order_by(
@@ -393,15 +405,15 @@ def votos_totais(
     return [
         VotoTotalOut(
             ano=r.ano,
-            nr_turno=None,
+            nr_turno=None,  # coluna não existe na tabela atual
             uf=r.uf,
             cd_municipio=r.cd_municipio,
             nm_municipio=r.nm_municipio,
             cd_cargo=r.cd_cargo,
             ds_cargo=r.ds_cargo,
-            nr_candidato=None,  # tabela não tem essa coluna
-            nm_candidato=r.nm_candidato,
-            nm_urna_candidato=r.nm_urna_candidato,
+            nr_candidato=r.nr_votavel,
+            nm_candidato=r.nm_votavel,
+            nm_urna_candidato=None,  # não existe na tabela
             sg_partido=r.sg_partido,
             total_votos=r.total_votos,
             ds_sit_tot_turno=r.ds_sit_tot_turno,
@@ -421,8 +433,7 @@ def candidatos(
     db: Session = Depends(get_db),
 ):
     """
-    Lista candidatos com seus totais (usa votacao_candidato_munzona).
-    Mesma base de /votos/totais, mas focado em lista de candidatos.
+    Lista candidatos com seus totais (usa a base de Votacao_Candidato_Munzona).
     """
     try:
         q = db.query(
@@ -432,8 +443,8 @@ def candidatos(
             VotoCandidatoMunZona.nm_municipio,
             VotoCandidatoMunZona.cd_cargo,
             VotoCandidatoMunZona.ds_cargo,
-            VotoCandidatoMunZona.nm_candidato,
-            VotoCandidatoMunZona.nm_urna_candidato,
+            VotoCandidatoMunZona.nr_votavel,
+            VotoCandidatoMunZona.nm_votavel,
             VotoCandidatoMunZona.sg_partido,
             VotoCandidatoMunZona.ds_sit_tot_turno,
             func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
@@ -457,8 +468,8 @@ def candidatos(
             VotoCandidatoMunZona.nm_municipio,
             VotoCandidatoMunZona.cd_cargo,
             VotoCandidatoMunZona.ds_cargo,
-            VotoCandidatoMunZona.nm_candidato,
-            VotoCandidatoMunZona.nm_urna_candidato,
+            VotoCandidatoMunZona.nr_votavel,
+            VotoCandidatoMunZona.nm_votavel,
             VotoCandidatoMunZona.sg_partido,
             VotoCandidatoMunZona.ds_sit_tot_turno,
         ).order_by(
@@ -470,15 +481,15 @@ def candidatos(
         return [
             VotoTotalOut(
                 ano=r.ano,
-                nr_turno=None,
+                nr_turno=None,  # coluna não existe na tabela
                 uf=r.uf,
                 cd_municipio=r.cd_municipio,
                 nm_municipio=r.nm_municipio,
                 cd_cargo=r.cd_cargo,
                 ds_cargo=r.ds_cargo,
-                nr_candidato=None,  # sem coluna no banco
-                nm_candidato=r.nm_candidato,
-                nm_urna_candidato=r.nm_urna_candidato,
+                nr_candidato=r.nr_votavel,
+                nm_candidato=r.nm_votavel,
+                nm_urna_candidato=None,
                 sg_partido=r.sg_partido,
                 total_votos=r.total_votos,
                 ds_sit_tot_turno=r.ds_sit_tot_turno,
@@ -497,6 +508,9 @@ def partidos(
     limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
+    """
+    Total de votos por partido (Votacao_Candidato_Munzona).
+    """
     q = db.query(
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ano,
@@ -537,6 +551,9 @@ def ranking_partidos(
     limit: int = Query(30, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
+    """
+    Ranking de partidos por votos totais (Votacao_Candidato_Munzona).
+    """
     q = db.query(
         VotoCandidatoMunZona.sg_partido,
         func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
@@ -579,6 +596,12 @@ async def upload_csv(
     ),
     file: UploadFile = File(...),
 ):
+    """
+    Upload de UM CSV:
+      - tipo=secao  -> VOTACAO_SECAO -> tabela votos_secao
+      - tipo=munzona -> DETALHE_VOTACAO_MUNZONA -> tabela resumo_munzona
+    (Os arquivos de votacao_candidato_munzona você já carregou direto no Postgres)
+    """
     filename = file.filename
 
     if not filename.lower().endswith(".csv"):
@@ -606,6 +629,11 @@ async def upload_csv(
 
 @app.post("/upload-zip", response_model=UploadResponse)
 async def upload_zip(file: UploadFile = File(...)):
+    """
+    Upload de um ZIP com vários CSVs:
+    - 'SECAO'  -> VOTACAO_SECAO
+    - 'MUNZONA' -> DETALHE_VOTACAO_MUNZONA
+    """
     filename = file.filename
 
     if not filename.lower().endswith(".zip"):
@@ -647,6 +675,10 @@ async def upload_zip(file: UploadFile = File(...)):
 
 @app.post("/reload", response_model=UploadResponse)
 def reload_arquivos_existentes():
+    """
+    Reingere TODOS os CSVs que já estão em /app/dados_tse_volume (ou ./dados_tse em dev).
+    (Somente SECAO e DETALHE_VOTACAO_MUNZONA; votacao_candidato_munzona já está no banco)
+    """
     try:
         total = ingest_all()
     except Exception as e:
@@ -660,6 +692,9 @@ def reload_arquivos_existentes():
 
 @app.post("/clear-volume")
 def clear_volume():
+    """
+    Apaga todos os arquivos do volume e limpa as tabelas de votos.
+    """
     for path in Path(UPLOAD_DIR).glob("*"):
         if path.is_file():
             path.unlink()
