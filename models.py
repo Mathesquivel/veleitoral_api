@@ -47,7 +47,7 @@ class VotoSecao(Base):
 class ResumoMunZona(Base):
     __tablename__ = "resumo_munzona"
 
-    id = Column(BigInteger, primary_key=True, index=True, autocommit=True)
+    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
 
     ano = Column(String)
     nr_turno = Column(Integer, nullable=True)
@@ -96,8 +96,8 @@ class VotoCandidatoMunZona(Base):
     """
     Mapeia a tabela 'votacao_candidato_munzona' que já está no Postgres.
 
-    NÃO tentamos adivinhar aqui o nome da coluna de votos,
-    para evitar erros de coluna inexistente.
+    A coluna de votos é descoberta dinamicamente no main.py,
+    então não mapeamos ela aqui para evitar erro de coluna inexistente.
     """
 
     __tablename__ = "votacao_candidato_munzona"
@@ -114,7 +114,5 @@ class VotoCandidatoMunZona(Base):
     nm_votavel = Column(String)
 
     sg_partido = Column(String)
-
-    # coluna de votos será descoberta dinamicamente no main.py
 
     ds_sit_tot_turno = Column(String)
