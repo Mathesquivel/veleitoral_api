@@ -1,0 +1,13 @@
+# Ignorar ambiente virtual
+venv/
+
+# Ignorar cache do Python
+__pycache__/
+*.pyc
+
+# Ignorar banco local
+*.db
+
+# Ignorar CSVs e datasets locais
+dados_tse/
+*.csv

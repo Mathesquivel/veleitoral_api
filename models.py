@@ -96,25 +96,26 @@ class VotoCandidatoMunZona(Base):
     """
     Mapeia a tabela 'votacao_candidato_munzona' que já está no Postgres.
 
-    Colunas relevantes (em minúsculo, como aparecem no erro do Postgres):
+    ATENÇÃO: no seu banco unificado essa tabela NÃO tem a coluna nr_candidato,
+    por isso o modelo e as queries NÃO usam esse campo.
+
+    Colunas usadas pela API:
     - ano
     - uf
     - cd_municipio
     - nm_municipio
     - cd_cargo
     - ds_cargo
-    - nr_candidato
     - nm_candidato
     - nm_urna_candidato
     - sg_partido
-    - qt_votos_nominais
     - qt_votos_nominais_validos
     - ds_sit_tot_turno
     """
 
     __tablename__ = "votacao_candidato_munzona"
 
-    # Definimos uma PK composta lógica (não precisa existir no banco como constraint)
+    # Chave composta lógica (não precisa existir PK no banco)
     ano = Column(String, primary_key=True)          # ano
     uf = Column(String(2), primary_key=True)        # uf
     cd_municipio = Column(String, primary_key=True)
@@ -123,13 +124,12 @@ class VotoCandidatoMunZona(Base):
     cd_cargo = Column(String, primary_key=True)
     ds_cargo = Column(String)
 
-    nr_candidato = Column(String, primary_key=True)
+    # IMPORTANTE: sem nr_candidato aqui
     nm_candidato = Column(String)
     nm_urna_candidato = Column(String)
 
     sg_partido = Column(String)
 
-    qt_votos_nominais = Column(BigInteger)
     qt_votos_nominais_validos = Column(BigInteger)
 
     ds_sit_tot_turno = Column(String)
