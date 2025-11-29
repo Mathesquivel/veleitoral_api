@@ -14,7 +14,7 @@ import zipfile
 import shutil
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func, inspect
+from sqlalchemy import func, inspect, text, literal_column
 
 from database import get_db
 from ingestor import (
@@ -58,15 +58,53 @@ def on_startup():
 
 
 # =============================
+# CONSTANTES / HELPERS
+# =============================
+
+# nomes possíveis de coluna de votos na votacao_candidato_munzona
+CANDIDATO_VOTOS_CANDIDATES = [
+    "qt_votos_nominais_validos",
+    "qt_votos_nominais",
+    "qt_votos",
+]
+
+
+def get_candidato_votos_column_name(db: Session) -> str:
+    """
+    Descobre dinamicamente qual é a coluna de votos na tabela
+    votacao_candidato_munzona. Isso evita erro 500 por coluna inexistente.
+    """
+    insp = inspect(db.bind)
+    try:
+        cols = insp.get_columns("votacao_candidato_munzona")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Não consegui inspecionar a tabela votacao_candidato_munzona: {e}",
+        )
+
+    colnames = {c["name"].lower() for c in cols}
+
+    for candidato in CANDIDATO_VOTOS_CANDIDATES:
+        if candidato.lower() in colnames:
+            return candidato
+
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            "Não encontrei coluna de votos na tabela votacao_candidato_munzona. "
+            f"Colunas testadas: {CANDIDATO_VOTOS_CANDIDATES}. "
+            f"Colunas disponíveis: {sorted(colnames)}"
+        ),
+    )
+
+
+# =============================
 # DEBUG – LISTAR COLUNAS REAIS
 # =============================
 
 @app.get("/debug/cols")
 def debug_cols(db: Session = Depends(get_db)):
-    """
-    Endpoint temporário pra descobrir os nomes REAIS das colunas
-    da tabela votacao_candidato_munzona lá no Postgres do Railway.
-    """
     insp = inspect(db.bind)
     cols = insp.get_columns("votacao_candidato_munzona")
     return {"columns": [c["name"] for c in cols]}
@@ -78,9 +116,6 @@ def debug_cols(db: Session = Depends(get_db)):
 
 @app.get("/estatisticas", response_model=EstatisticasOut)
 def estatisticas(db: Session = Depends(get_db)):
-    """
-    Estatísticas gerais de linhas de votos de seção e resumo munzona.
-    """
     total_secao = db.query(func.count(VotoSecao.id)).scalar() or 0
     total_mz = db.query(func.count(ResumoMunZona.id)).scalar() or 0
 
@@ -110,10 +145,6 @@ def mapa_locais(
     limit: int = Query(1000, ge=1, le=10000),
     db: Session = Depends(get_db),
 ):
-    """
-    Locais de votação para o mapa:
-    agrega votos por local/zona/seção a partir de VotoSecao.
-    """
     q = db.query(
         VotoSecao.ano.label("ano"),
         VotoSecao.uf.label("uf"),
@@ -187,9 +218,6 @@ def votos_por_zona(
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
-    """
-    Votos por ZONA, a partir de VotoSecao.
-    """
     q = db.query(
         VotoSecao.ano.label("ano"),
         VotoSecao.uf.label("uf"),
@@ -247,9 +275,6 @@ def votos_por_municipio(
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
-    """
-    Votos agregados por MUNICÍPIO, a partir de VotoSecao.
-    """
     q = db.query(
         VotoSecao.ano,
         VotoSecao.uf,
@@ -297,9 +322,6 @@ def votos_por_cargo(
     uf: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """
-    Votos agregados por CARGO (a partir de VotoSecao).
-    """
     q = db.query(
         VotoSecao.ano,
         VotoSecao.ds_cargo,
@@ -330,7 +352,6 @@ def votos_por_cargo(
 
 # =============================
 # AGREGAÇÕES USANDO VOTACAO_CANDIDATO_MUNZONA
-# (PESQUISA / RANKING / PARTIDOS / CANDIDATOS)
 # =============================
 
 @app.get("/votos/totais", response_model=List[VotoTotalOut])
@@ -340,20 +361,15 @@ def votos_totais(
     cd_municipio: Optional[str] = Query(None),
     cd_cargo: Optional[str] = Query(None),
     ds_cargo: Optional[str] = Query(None),
-    nr_candidato: Optional[str] = Query(None),  # mapeia NR_VOTAVEL
+    nr_candidato: Optional[str] = Query(None),
     sg_partido: Optional[str] = Query(None),
     ds_sit_tot_turno: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
-    """
-    Votos agregados por "candidato", usando Votacao_Candidato_Munzona.
-    Usa QT_VOTOS_NOMINAIS_VALIDOS como total de votos.
+    votos_col_name = get_candidato_votos_column_name(db)
+    votos_col = literal_column(votos_col_name)
 
-    Internamente:
-    - NR_VOTAVEL -> nr_candidato
-    - NM_VOTAVEL -> nm_candidato
-    """
     q = db.query(
         VotoCandidatoMunZona.ano.label("ano"),
         VotoCandidatoMunZona.uf.label("uf"),
@@ -365,7 +381,7 @@ def votos_totais(
         VotoCandidatoMunZona.nm_votavel,
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ds_sit_tot_turno,
-        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
+        func.sum(votos_col).label("total_votos"),
     )
 
     if ano:
@@ -397,7 +413,7 @@ def votos_totais(
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ds_sit_tot_turno,
     ).order_by(
-        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).desc()
+        func.sum(votos_col).desc()
     ).limit(limit)
 
     rows = q.all()
@@ -405,7 +421,7 @@ def votos_totais(
     return [
         VotoTotalOut(
             ano=r.ano,
-            nr_turno=None,  # coluna não existe na tabela atual
+            nr_turno=None,
             uf=r.uf,
             cd_municipio=r.cd_municipio,
             nm_municipio=r.nm_municipio,
@@ -413,7 +429,7 @@ def votos_totais(
             ds_cargo=r.ds_cargo,
             nr_candidato=r.nr_votavel,
             nm_candidato=r.nm_votavel,
-            nm_urna_candidato=None,  # não existe na tabela
+            nm_urna_candidato=None,
             sg_partido=r.sg_partido,
             total_votos=r.total_votos,
             ds_sit_tot_turno=r.ds_sit_tot_turno,
@@ -432,10 +448,10 @@ def candidatos(
     limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
-    """
-    Lista candidatos com seus totais (usa a base de Votacao_Candidato_Munzona).
-    """
     try:
+        votos_col_name = get_candidato_votos_column_name(db)
+        votos_col = literal_column(votos_col_name)
+
         q = db.query(
             VotoCandidatoMunZona.ano.label("ano"),
             VotoCandidatoMunZona.uf.label("uf"),
@@ -447,7 +463,7 @@ def candidatos(
             VotoCandidatoMunZona.nm_votavel,
             VotoCandidatoMunZona.sg_partido,
             VotoCandidatoMunZona.ds_sit_tot_turno,
-            func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
+            func.sum(votos_col).label("total_votos"),
         )
 
         if ano:
@@ -473,7 +489,7 @@ def candidatos(
             VotoCandidatoMunZona.sg_partido,
             VotoCandidatoMunZona.ds_sit_tot_turno,
         ).order_by(
-            func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).desc()
+            func.sum(votos_col).desc()
         ).limit(limit)
 
         rows = q.all()
@@ -481,7 +497,7 @@ def candidatos(
         return [
             VotoTotalOut(
                 ano=r.ano,
-                nr_turno=None,  # coluna não existe na tabela
+                nr_turno=None,
                 uf=r.uf,
                 cd_municipio=r.cd_municipio,
                 nm_municipio=r.nm_municipio,
@@ -496,6 +512,9 @@ def candidatos(
             )
             for r in rows
         ]
+    except HTTPException:
+        # repassa erro amigável se a coluna não for encontrada
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro na query candidatos: {e}")
 
@@ -508,13 +527,13 @@ def partidos(
     limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
-    """
-    Total de votos por partido (Votacao_Candidato_Munzona).
-    """
+    votos_col_name = get_candidato_votos_column_name(db)
+    votos_col = literal_column(votos_col_name)
+
     q = db.query(
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ano,
-        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
+        func.sum(votos_col).label("total_votos"),
     ).filter(VotoCandidatoMunZona.sg_partido.isnot(None))
 
     if ano:
@@ -528,7 +547,7 @@ def partidos(
         VotoCandidatoMunZona.sg_partido,
         VotoCandidatoMunZona.ano,
     ).order_by(
-        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).desc()
+        func.sum(votos_col).desc()
     ).limit(limit)
 
     rows = q.all()
@@ -551,12 +570,12 @@ def ranking_partidos(
     limit: int = Query(30, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    """
-    Ranking de partidos por votos totais (Votacao_Candidato_Munzona).
-    """
+    votos_col_name = get_candidato_votos_column_name(db)
+    votos_col = literal_column(votos_col_name)
+
     q = db.query(
         VotoCandidatoMunZona.sg_partido,
-        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
+        func.sum(votos_col).label("total_votos"),
     ).filter(VotoCandidatoMunZona.sg_partido.isnot(None))
 
     if ano:
@@ -569,7 +588,7 @@ def ranking_partidos(
     q = q.group_by(
         VotoCandidatoMunZona.sg_partido,
     ).order_by(
-        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).desc()
+        func.sum(votos_col).desc()
     ).limit(limit)
 
     rows = q.all()
@@ -585,6 +604,7 @@ def ranking_partidos(
 
 # =============================
 # UPLOAD / RELOAD / CLEAR
+# (IGUAL AO QUE JÁ TÍNHAMOS)
 # =============================
 
 @app.post("/upload", response_model=UploadResponse)
@@ -596,12 +616,6 @@ async def upload_csv(
     ),
     file: UploadFile = File(...),
 ):
-    """
-    Upload de UM CSV:
-      - tipo=secao  -> VOTACAO_SECAO -> tabela votos_secao
-      - tipo=munzona -> DETALHE_VOTACAO_MUNZONA -> tabela resumo_munzona
-    (Os arquivos de votacao_candidato_munzona você já carregou direto no Postgres)
-    """
     filename = file.filename
 
     if not filename.lower().endswith(".csv"):
@@ -629,11 +643,6 @@ async def upload_csv(
 
 @app.post("/upload-zip", response_model=UploadResponse)
 async def upload_zip(file: UploadFile = File(...)):
-    """
-    Upload de um ZIP com vários CSVs:
-    - 'SECAO'  -> VOTACAO_SECAO
-    - 'MUNZONA' -> DETALHE_VOTACAO_MUNZONA
-    """
     filename = file.filename
 
     if not filename.lower().endswith(".zip"):
@@ -675,10 +684,6 @@ async def upload_zip(file: UploadFile = File(...)):
 
 @app.post("/reload", response_model=UploadResponse)
 def reload_arquivos_existentes():
-    """
-    Reingere TODOS os CSVs que já estão em /app/dados_tse_volume (ou ./dados_tse em dev).
-    (Somente SECAO e DETALHE_VOTACAO_MUNZONA; votacao_candidato_munzona já está no banco)
-    """
     try:
         total = ingest_all()
     except Exception as e:
@@ -692,9 +697,6 @@ def reload_arquivos_existentes():
 
 @app.post("/clear-volume")
 def clear_volume():
-    """
-    Apaga todos os arquivos do volume e limpa as tabelas de votos.
-    """
     for path in Path(UPLOAD_DIR).glob("*"):
         if path.is_file():
             path.unlink()

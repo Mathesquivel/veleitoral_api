@@ -47,7 +47,7 @@ class VotoSecao(Base):
 class ResumoMunZona(Base):
     __tablename__ = "resumo_munzona"
 
-    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    id = Column(BigInteger, primary_key=True, index=True, autocommit=True)
 
     ano = Column(String)
     nr_turno = Column(Integer, nullable=True)
@@ -96,18 +96,8 @@ class VotoCandidatoMunZona(Base):
     """
     Mapeia a tabela 'votacao_candidato_munzona' que já está no Postgres.
 
-    Layout típico TSE (versão municipal 2018/2020/2024):
-    - ANO_ELEICAO          -> ano
-    - SG_UF                -> uf
-    - CD_MUNICIPIO         -> cd_municipio
-    - NM_MUNICIPIO         -> nm_municipio
-    - CD_CARGO             -> cd_cargo
-    - DS_CARGO             -> ds_cargo
-    - NR_VOTAVEL           -> nr_votavel
-    - NM_VOTAVEL           -> nm_votavel
-    - SG_PARTIDO           -> sg_partido
-    - QT_VOTOS_NOMINAIS_VALIDOS -> qt_votos_nominais_validos
-    - DS_SIT_TOT_TURNO     -> ds_sit_tot_turno
+    NÃO tentamos adivinhar aqui o nome da coluna de votos,
+    para evitar erros de coluna inexistente.
     """
 
     __tablename__ = "votacao_candidato_munzona"
@@ -125,6 +115,6 @@ class VotoCandidatoMunZona(Base):
 
     sg_partido = Column(String)
 
-    qt_votos_nominais_validos = Column(BigInteger)
+    # coluna de votos será descoberta dinamicamente no main.py
 
     ds_sit_tot_turno = Column(String)
