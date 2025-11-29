@@ -6,35 +6,56 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 Base = declarative_base()
 
 
-def _build_database_url() -> str:
+def _build_database_url():
     """
-    Usa a URL do Railway (URL_PÚBLICA_DO_BANCO_DE_DADOS) ou DATABASE_URL local.
-    Converte 'postgresql://' em 'postgresql+psycopg2://'.
+    Retorna automaticamente a URL do banco (Railway / local).
+    Aceita múltiplas variáveis para evitar erros:
+    - DATABASE_URL (Railway padrão)
+    - POSTGRES_URL
+    - POSTGRESQL_URL
+    - URL_PUBLICA_DO_BANCO_DE_DADOS (sua variável antiga)
+    - Qualquer variável que contenha 'postgres'
     """
-    url = os.getenv("URL_PÚBLICA_DO_BANCO_DE_DADOS") or os.getenv("DATABASE_URL")
 
-    if not url:
-        raise RuntimeError(
-            "❌ Nenhuma URL de banco encontrada. "
-            "Defina URL_PÚBLICA_DO_BANCO_DE_DADOS (Railway) ou DATABASE_URL (local)."
-        )
+    # Prioridade explícita
+    env_keys = [
+        "DATABASE_URL",
+        "POSTGRES_URL",
+        "POSTGRESQL_URL",
+        "URL_PUBLICA_DO_BANCO_DE_DADOS",
+    ]
 
-    if url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    # Procura diretamente por essas keys
+    for key in env_keys:
+        if key in os.environ and os.environ[key].strip():
+            return os.environ[key].strip()
 
-    return url
+    # Procura por QUALQUER variavel que contenha 'postgres'
+    for key, value in os.environ.items():
+        if "postgres" in key.lower() and value.strip():
+            return value.strip()
+
+    # Se nada encontrado → erro claro
+    raise RuntimeError(
+        "❌ Nenhuma URL de banco encontrada.\n"
+        "Certifique-se de definir DATABASE_URL no Railway."
+    )
 
 
 DATABASE_URL = _build_database_url()
 
+# Railway muitas vezes entrega sem sslmode — adicionamos se faltar
+if "sslmode" not in DATABASE_URL:
+    DATABASE_URL += "?sslmode=require"
+
+# Cria engine SQLAlchemy
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Session
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def get_db():
@@ -43,3 +64,8 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def init_db():
+    """Cria tabelas automaticamente (somente se não existirem)."""
+    Base.metadata.create_all(bind=engine)
