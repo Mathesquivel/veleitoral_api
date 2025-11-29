@@ -1,5 +1,5 @@
 # schemas.py
-from typing import Optional, List
+from typing import List, Optional
 from pydantic import BaseModel
 
 
@@ -14,9 +14,6 @@ class VotoTotalOut(BaseModel):
     sg_partido: Optional[str]
     total_votos: int
 
-    class Config:
-        from_attributes = True
-
 
 class VotoZonaOut(BaseModel):
     ano: Optional[str]
@@ -30,9 +27,6 @@ class VotoZonaOut(BaseModel):
     sg_partido: Optional[str]
     total_votos: int
 
-    class Config:
-        from_attributes = True
-
 
 class VotoMunicipioOut(BaseModel):
     ano: Optional[str]
@@ -42,34 +36,22 @@ class VotoMunicipioOut(BaseModel):
     ds_cargo: Optional[str]
     total_votos: int
 
-    class Config:
-        from_attributes = True
-
 
 class VotoCargoOut(BaseModel):
     ano: Optional[str]
     ds_cargo: Optional[str]
     total_votos: int
 
-    class Config:
-        from_attributes = True
-
 
 class PartidoOut(BaseModel):
-    sg_partido: str
+    sg_partido: Optional[str]
     ano: Optional[str]
     total_votos: int
 
-    class Config:
-        from_attributes = True
-
 
 class RankingPartidosOut(BaseModel):
-    sg_partido: str
+    sg_partido: Optional[str]
     total_votos: int
-
-    class Config:
-        from_attributes = True
 
 
 class EstatisticasOut(BaseModel):

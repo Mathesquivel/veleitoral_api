@@ -38,7 +38,7 @@ class VotoSecao(Base):
     cd_cargo = Column(String(10), index=True, nullable=True)   # CD_CARGO
     ds_cargo = Column(String(100), index=True)                 # DS_CARGO
 
-    nr_votavel = Column(String(20), index=True)    # NR_VOTAVEL (nº candidato/partido)
+    nr_votavel = Column(String(20), index=True)    # NR_VOTAVEL
     nm_votavel = Column(String(200))               # NM_VOTAVEL
 
     nr_partido = Column(String(10), nullable=True)          # NR_PARTIDO
@@ -56,8 +56,8 @@ class VotoSecao(Base):
 
 class ResumoMunZona(Base):
     """
-    Tabela baseada no arquivo DETALHE_VOTACAO_MUNZONA_<ANO>_<UF/BR>.
-    Totais por município+zona+cargo (aptos, comparecimento, abstenções, etc.).
+    Tabela baseada no arquivo DETALHE_VOTACAO_MUNZONA.
+    Totais por município+zona+cargo.
     """
     __tablename__ = "resumo_munzona"
 
@@ -95,18 +95,11 @@ class ResumoMunZona(Base):
 
 class CandidatoMeta(Base):
     """
-    Tabela candidatos_meta (já existente no Postgres).
-    Usada para Ranking e Pesquisa de candidatos/partidos.
-
-    Colunas reais, conforme informado:
-    arquivo_origem, ano, uf, cd_cargo, nr_turno,
-    cd_municipio, nm_municipio, nr_candidato, nm_candidato,
-    sg_partido, nm_partido, ds_sit_tot_turno, ds_situacao_candidatura
+    Tabela candidatos_meta já existente no Postgres.
+    Usada como meta de candidatos e partidos.
     """
     __tablename__ = "candidatos_meta"
 
-    # Se essa coluna não existir fisicamente, não tem problema
-    # enquanto a gente não selecionar 'id' nas queries.
     id = Column(BigInteger, primary_key=True, autoincrement=True)
 
     arquivo_origem = Column(String(255), nullable=True)
@@ -132,7 +125,6 @@ class CandidatoMeta(Base):
 class ImportLog(Base):
     """
     Log simples das importações (secao/munzona).
-    Só para controle.
     """
     __tablename__ = "import_log"
 

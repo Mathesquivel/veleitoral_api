@@ -7,6 +7,7 @@ from fastapi import (
     HTTPException,
     Depends,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
 from pathlib import Path
 import os
@@ -39,6 +40,26 @@ from schemas import (
 
 app = FastAPI(title="API TSE - VELEITORAL")
 
+# =============================
+# CORS
+# =============================
+origins = [
+    "http://localhost:3000",
+    "http://localhost:4173",
+    "https://lovable.dev",
+    "https://*.lovable.app",
+    "https://veleitoral.lovable.app",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # se quiser, depois troca por 'origins'
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Diretório do volume
 UPLOAD_DIR = DATA_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -95,8 +116,8 @@ def votos_totais(
 ):
     """
     Votos agregados por candidato.
-    VOTOS vêm de votos_secao (qt_votos).
-    META (nome oficial, partido, etc.) vem de candidatos_meta.
+    VOTOS = soma de votos_secao.qt_votos
+    META = candidatos_meta
     """
     q = db.query(
         CandidatoMeta.ano,
@@ -126,7 +147,6 @@ def votos_totais(
     if cd_municipio:
         q = q.filter(CandidatoMeta.cd_municipio == cd_municipio)
     if ds_cargo:
-        # ds_cargo é texto só em votos_secao
         q = q.filter(VotoSecao.ds_cargo == ds_cargo)
     if nr_candidato:
         q = q.filter(CandidatoMeta.nr_candidato == nr_candidato)
@@ -173,8 +193,8 @@ def votos_por_zona(
     db: Session = Depends(get_db),
 ):
     """
-    Votos por ZONA, agrupando dados de VotoSecao.
-    (Usado pro mapa / zonas).
+    Votos por ZONA, a partir de votos_secao.
+    Usado para mapa e detalhamento por zona.
     """
     q = db.query(
         VotoSecao.ano.label("ano"),
@@ -240,39 +260,29 @@ def votos_por_municipio(
     db: Session = Depends(get_db),
 ):
     """
-    Votos agregados por MUNICÍPIO (a partir dos votos de seção).
-    Usa join com candidatos_meta só pra garantir consistência.
+    Votos agregados por MUNICÍPIO.
     """
     q = db.query(
-        CandidatoMeta.ano,
-        CandidatoMeta.uf,
-        CandidatoMeta.cd_municipio,
-        CandidatoMeta.nm_municipio,
-        VotoSecao.ds_cargo.label("ds_cargo"),
+        VotoSecao.ano,
+        VotoSecao.uf,
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
+        VotoSecao.ds_cargo,
         func.sum(VotoSecao.qt_votos).label("total_votos"),
-    ).join(
-        VotoSecao,
-        and_(
-            VotoSecao.ano == CandidatoMeta.ano,
-            VotoSecao.uf == CandidatoMeta.uf,
-            VotoSecao.cd_municipio == CandidatoMeta.cd_municipio,
-            VotoSecao.cd_cargo == CandidatoMeta.cd_cargo,
-            VotoSecao.nr_votavel == CandidatoMeta.nr_candidato,
-        ),
     )
 
     if ano:
-        q = q.filter(CandidatoMeta.ano == ano)
+        q = q.filter(VotoSecao.ano == ano)
     if uf:
-        q = q.filter(CandidatoMeta.uf == uf)
+        q = q.filter(VotoSecao.uf == uf)
     if ds_cargo:
         q = q.filter(VotoSecao.ds_cargo == ds_cargo)
 
     q = q.group_by(
-        CandidatoMeta.ano,
-        CandidatoMeta.uf,
-        CandidatoMeta.cd_municipio,
-        CandidatoMeta.nm_municipio,
+        VotoSecao.ano,
+        VotoSecao.uf,
+        VotoSecao.cd_municipio,
+        VotoSecao.nm_municipio,
         VotoSecao.ds_cargo,
     ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
 
@@ -343,7 +353,6 @@ def candidatos(
     """
     Lista candidatos com total de votos.
     Votos = soma de votos_secao.
-    Candidatos = meta em candidatos_meta.
     """
     q = db.query(
         CandidatoMeta.ano,
@@ -409,7 +418,6 @@ def partidos(
 ):
     """
     Total de votos por partido.
-    Usa join para garantir só partidos presentes em candidatos_meta.
     """
     q = db.query(
         CandidatoMeta.sg_partido,
@@ -502,8 +510,8 @@ async def upload_csv(
 ):
     """
     Faz upload de UM CSV e ingere:
-      - tipo=secao  -> VOTACAO_SECAO -> tabela votos_secao
-      - tipo=munzona/generico/resumo -> DETALHE_VOTACAO_MUNZONA -> tabela resumo_munzona
+      - tipo=secao  -> VOTACAO_SECAO -> votos_secao
+      - tipo=munzona/generico/resumo -> DETALHE_VOTACAO_MUNZONA -> resumo_munzona
     """
     filename = file.filename
 
@@ -534,8 +542,8 @@ async def upload_csv(
 async def upload_zip(file: UploadFile = File(...)):
     """
     Upload de um ZIP com vários CSVs.
-    - Arquivos com 'SECAO' no nome -> VOTACAO_SECAO
-    - Arquivos com 'MUNZONA' no nome -> DETALHE_VOTACAO_MUNZONA
+    - 'SECAO' no nome -> ingest_votacao_secao
+    - 'MUNZONA' no nome -> ingest_detalhe_munzona
     """
     filename = file.filename
 
@@ -579,7 +587,7 @@ async def upload_zip(file: UploadFile = File(...)):
 @app.post("/reload", response_model=UploadResponse)
 def reload_arquivos_existentes():
     """
-    Reingere TODOS os CSVs que já estão em /app/dados_tse_volume (ou ./dados_tse em dev).
+    Reingere TODOS os CSVs presentes em /app/dados_tse_volume.
     """
     try:
         total = ingest_all()
@@ -595,17 +603,15 @@ def reload_arquivos_existentes():
 @app.post("/clear-volume")
 def clear_volume():
     """
-    Apaga todos os arquivos do volume e limpa as tabelas de votos_secao e resumo_munzona.
+    Apaga arquivos do volume e limpa votos_secao + resumo_munzona.
     NÃO mexe em candidatos_meta.
     """
-    # Apaga arquivos
     for path in Path(UPLOAD_DIR).glob("*"):
         if path.is_file():
             path.unlink()
         else:
             shutil.rmtree(path, ignore_errors=True)
 
-    # Limpa dados no banco
     clear_all_data()
 
     return {"mensagem": "Volume e dados de votos apagados com sucesso"}

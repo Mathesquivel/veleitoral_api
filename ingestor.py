@@ -1,137 +1,80 @@
 # ingestor.py
 from pathlib import Path
-from typing import Optional
-
 import pandas as pd
-from sqlalchemy import text
 
-from database import engine, SessionLocal, Base
+from sqlalchemy.orm import Session
+
+from database import engine, SessionLocal
 from models import VotoSecao, ResumoMunZona, ImportLog
 
-# ==============================
-# CONFIGURAÇÃO DE ARQUIVOS
-# ==============================
-
-# Volume do Railway
-DEFAULT_DATA_DIR = Path("/app/dados_tse_volume")
-
-# Para desenvolvimento local, se o volume não existir, usa ./dados_tse
-if DEFAULT_DATA_DIR.exists():
-    DATA_DIR = DEFAULT_DATA_DIR
-else:
-    DATA_DIR = Path(__file__).parent / "dados_tse"
+# Diretório de dados (volume Railway)
+DATA_DIR = "/app/dados_tse_volume"
+Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
 
 SEP = ";"
 ENCODING = "latin1"
-CHUNKSIZE = 100_000
 
 
 def init_db():
-    """
-    Cria as tabelas no banco (se não existirem).
-    """
+    """Cria tabelas se ainda não existirem (exceto candidatos_meta, que já existe)."""
+    from database import Base
     Base.metadata.create_all(bind=engine)
 
 
-def _normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = [c.strip().upper() for c in df.columns]
-    return df
+def _insert_log(session: Session, tipo: str, nome_arquivo: str, linhas: int):
+    log = ImportLog(
+        tipo_arquivo=tipo,
+        nome_arquivo=nome_arquivo,
+        linhas_importadas=linhas,
+    )
+    session.add(log)
+    session.commit()
 
 
-def _detectar_coluna_votos(cols) -> Optional[str]:
-    candidatos = [
-        "QT_VOTOS",
-        "QT_VOTOS_VALIDOS",
-        "QT_VOTOS_NOMINAIS",
-        "QT_VOTOS_NOMINAIS_VALIDOS",
-    ]
-    for c in candidatos:
-        if c in cols:
-            return c
-    return None
-
-
-def _int_col(chunk: pd.DataFrame, colname: str) -> pd.Series:
+def ingest_votacao_secao(csv_path: Path) -> int:
     """
-    Converte uma coluna do chunk para int64.
-    Se a coluna não existir, retorna uma série de zeros
-    com o mesmo tamanho do chunk.
+    Ingere arquivo VOTACAO_SECAO_* para a tabela votos_secao.
+    Usa pandas + to_sql em chunks para lidar com arquivos grandes.
     """
-    if colname in chunk.columns:
-        return (
-            pd.to_numeric(chunk[colname].fillna(0), errors="coerce")
-            .fillna(0)
-            .astype("int64")
-        )
-    else:
-        return pd.Series([0] * len(chunk), dtype="int64")
+    csv_path = Path(csv_path)
+    total_linhas = 0
 
-
-# ==============================
-# INGESTÃO VOTACAO_SECAO
-# ==============================
-
-def ingest_votacao_secao(path: Path) -> int:
-    """
-    Ingestão do arquivo VOTACAO_SECAO_<ANO>_<UF>.
-    Gera registros na tabela votos_secao.
-    """
-    init_db()
-    linhas_total = 0
-
-    for chunk in pd.read_csv(
-        path,
+    chunks = pd.read_csv(
+        csv_path,
         sep=SEP,
         encoding=ENCODING,
         dtype=str,
-        chunksize=CHUNKSIZE,
-    ):
-        chunk = _normalizar_colunas(chunk)
-        voto_col = _detectar_coluna_votos(chunk.columns)
-        if not voto_col:
-            raise ValueError(f"Não encontrei coluna de votos em {path.name}")
+        chunksize=200_000,
+        low_memory=False,
+    )
 
-        df = pd.DataFrame()
+    for chunk in chunks:
+        # Normaliza nomes de colunas (upper)
+        chunk.columns = [c.strip().upper() for c in chunk.columns]
 
-        df["ano"] = chunk.get("ANO_ELEICAO")
-        df["nr_turno"] = _int_col(chunk, "NR_TURNO")
+        # Mapeia colunas do CSV -> colunas da tabela
+        df = pd.DataFrame({
+            "ano": chunk.get("ANO_ELEICAO"),
+            "nr_turno": chunk.get("NR_TURNO"),
+            "uf": chunk.get("SG_UF"),
+            "cd_municipio": chunk.get("CD_MUNICIPIO"),
+            "nm_municipio": chunk.get("NM_MUNICIPIO"),
+            "nr_zona": chunk.get("NR_ZONA"),
+            "nr_secao": chunk.get("NR_SECAO"),
+            "nr_local_votacao": chunk.get("NR_LOCAL_VOTACAO"),
+            "nm_local_votacao": chunk.get("NM_LOCAL_VOTACAO"),
+            "endereco_local": chunk.get("DS_LOCAL_VOTACAO_ENDERECO"),
+            "cd_cargo": chunk.get("CD_CARGO"),
+            "ds_cargo": chunk.get("DS_CARGO"),
+            "nr_votavel": chunk.get("NR_VOTAVEL"),
+            "nm_votavel": chunk.get("NM_VOTAVEL"),
+            "nr_partido": chunk.get("NR_PARTIDO"),
+            "sg_partido": chunk.get("SG_PARTIDO"),
+            "qt_votos": chunk.get("QT_VOTOS"),
+        })
 
-        df["uf"] = chunk.get("SG_UF")
-        df["cd_municipio"] = chunk.get("CD_MUNICIPIO")
-        df["nm_municipio"] = chunk.get("NM_MUNICIPIO")
-
-        df["nr_zona"] = chunk.get("NR_ZONA")
-        df["nr_secao"] = chunk.get("NR_SECAO")
-
-        df["nr_local_votacao"] = chunk.get("NR_LOCAL_VOTACAO")
-        df["nm_local_votacao"] = chunk.get("NM_LOCAL_VOTACAO")
-
-        # endereço do local (quando existir)
-        if "DS_LOCAL_VOTACAO_ENDERECO" in chunk.columns:
-            endereco = chunk["DS_LOCAL_VOTACAO_ENDERECO"]
-        elif "DS_ENDERECO_LOCAL_VOTACAO" in chunk.columns:
-            endereco = chunk["DS_ENDERECO_LOCAL_VOTACAO"]
-        else:
-            endereco = pd.Series([None] * len(chunk))
-
-        df["endereco_local"] = endereco
-
-        df["cd_cargo"] = chunk.get("CD_CARGO")
-        df["ds_cargo"] = chunk.get("DS_CARGO")
-
-        df["nr_votavel"] = chunk.get("NR_VOTAVEL")
-        df["nm_votavel"] = chunk.get("NM_VOTAVEL")
-
-        df["nr_partido"] = chunk.get("NR_PARTIDO")
-        df["sg_partido"] = chunk.get("SG_PARTIDO")
-
-        df["qt_votos"] = _int_col(chunk, voto_col)
-
-        # Remove registros sem votável (linhas de controle, etc.)
-        df = df[df["nr_votavel"].notna()]
-
-        if df.empty:
-            continue
+        # Converte qt_votos pra numérico (NaN -> 0)
+        df["qt_votos"] = pd.to_numeric(df["qt_votos"], errors="coerce").fillna(0).astype("int64")
 
         df.to_sql(
             VotoSecao.__tablename__,
@@ -139,76 +82,60 @@ def ingest_votacao_secao(path: Path) -> int:
             if_exists="append",
             index=False,
             method="multi",
+            chunksize=10_000,
         )
 
-        linhas_total += len(df)
+        total_linhas += len(df)
 
     # Log
-    with SessionLocal() as db:
-        log = ImportLog(
-            tipo_arquivo="secao",
-            nome_arquivo=path.name,
-            linhas_importadas=linhas_total,
-        )
-        db.add(log)
-        db.commit()
+    with SessionLocal() as session:
+        _insert_log(session, "secao", csv_path.name, total_linhas)
 
-    return linhas_total
+    return total_linhas
 
 
-# ==============================
-# INGESTÃO DETALHE_VOTACAO_MUNZONA
-# ==============================
-
-def ingest_detalhe_munzona(path: Path) -> int:
+def ingest_detalhe_munzona(csv_path: Path) -> int:
     """
-    Ingestão do arquivo DETALHE_VOTACAO_MUNZONA_<ANO>_<UF/BR>.
-    Gera registros na tabela resumo_munzona.
+    Ingere arquivo DETALHE_VOTACAO_MUNZONA_* para a tabela resumo_munzona.
     """
-    init_db()
-    linhas_total = 0
+    csv_path = Path(csv_path)
+    total_linhas = 0
 
-    for chunk in pd.read_csv(
-        path,
+    chunks = pd.read_csv(
+        csv_path,
         sep=SEP,
         encoding=ENCODING,
         dtype=str,
-        chunksize=CHUNKSIZE,
-    ):
-        chunk = _normalizar_colunas(chunk)
+        chunksize=200_000,
+        low_memory=False,
+    )
 
-        df = pd.DataFrame()
+    for chunk in chunks:
+        chunk.columns = [c.strip().upper() for c in chunk.columns]
 
-        df["ano"] = chunk.get("ANO_ELEICAO")
-        df["nr_turno"] = _int_col(chunk, "NR_TURNO")
+        def num(colname: str):
+            return pd.to_numeric(chunk.get(colname), errors="coerce").fillna(0).astype("int64")
 
-        df["uf"] = chunk.get("SG_UF")
-        df["cd_municipio"] = chunk.get("CD_MUNICIPIO")
-        df["nm_municipio"] = chunk.get("NM_MUNICIPIO")
-
-        df["nr_zona"] = chunk.get("NR_ZONA")
-
-        df["cd_cargo"] = chunk.get("CD_CARGO")
-        df["ds_cargo"] = chunk.get("DS_CARGO")
-
-        df["qt_aptos"] = _int_col(chunk, "QT_APTOS")
-        df["qt_total_secoes"] = _int_col(chunk, "QT_TOTAL_SECOES")
-        df["qt_comparecimento"] = _int_col(chunk, "QT_COMPARECIMENTO")
-        df["qt_abstencoes"] = _int_col(chunk, "QT_ABSTENCOES")
-
-        df["qt_votos"] = _int_col(chunk, "QT_VOTOS")
-        df["qt_votos_nominais_validos"] = _int_col(
-            chunk, "QT_VOTOS_NOMINAIS_VALIDOS"
-        )
-        df["qt_votos_brancos"] = _int_col(chunk, "QT_VOTOS_BRANCOS")
-        df["qt_total_votos_nulos"] = _int_col(chunk, "QT_TOTAL_VOTOS_NULOS")
-        df["qt_total_votos_leg_validos"] = _int_col(
-            chunk, "QT_TOTAL_VOTOS_LEG_VALIDOS"
-        )
-        df["qt_votos_leg_validos"] = _int_col(chunk, "QT_VOTOS_LEG_VALIDOS")
-
-        if df.empty:
-            continue
+        df = pd.DataFrame({
+            "ano": chunk.get("ANO_ELEICAO"),
+            "nr_turno": chunk.get("NR_TURNO"),
+            "uf": chunk.get("SG_UF"),
+            "cd_municipio": chunk.get("CD_MUNICIPIO"),
+            "nm_municipio": chunk.get("NM_MUNICIPIO"),
+            "nr_zona": chunk.get("NR_ZONA"),
+            "cd_cargo": chunk.get("CD_CARGO"),
+            "ds_cargo": chunk.get("DS_CARGO"),
+            "qt_aptos": num("QT_APTOS") if "QT_APTOS" in chunk.columns else 0,
+            "qt_total_secoes": num("QT_SECOES") if "QT_SECOES" in chunk.columns else 0,
+            "qt_comparecimento": num("QT_COMPARECIMENTO") if "QT_COMPARECIMENTO" in chunk.columns else 0,
+            "qt_abstencoes": num("QT_ABSTENCOES") if "QT_ABSTENCOES" in chunk.columns else 0,
+            "qt_votos": num("QT_VOTOS") if "QT_VOTOS" in chunk.columns else 0,
+            "qt_votos_nominais_validos": num("QT_VOTOS_NOMINAIS_VALIDOS") if "QT_VOTOS_NOMINAIS_VALIDOS" in chunk.columns else 0,
+            "qt_votos_brancos": num("QT_VOTOS_BRANCOS") if "QT_VOTOS_BRANCOS" in chunk.columns else 0,
+            "qt_total_votos_nulos": num("QT_VOTOS_NULOS") if "QT_VOTOS_NULOS" in chunk.columns else 0,
+            "qt_total_votos_leg_validos": num("QT_VOTOS_LEGENDA") if "QT_VOTOS_LEGENDA" in chunk.columns else 0,
+            "qt_votos_leg_validos": num("QT_VOTOS_ANULADOS_APTOS") if "QT_VOTOS_ANULADOS_APTOS" in chunk.columns else 0,
+        })
 
         df.to_sql(
             ResumoMunZona.__tablename__,
@@ -216,61 +143,41 @@ def ingest_detalhe_munzona(path: Path) -> int:
             if_exists="append",
             index=False,
             method="multi",
+            chunksize=10_000,
         )
 
-        linhas_total += len(df)
+        total_linhas += len(df)
 
-    with SessionLocal() as db:
-        log = ImportLog(
-            tipo_arquivo="munzona",
-            nome_arquivo=path.name,
-            linhas_importadas=linhas_total,
-        )
-        db.add(log)
-        db.commit()
+    with SessionLocal() as session:
+        _insert_log(session, "munzona", csv_path.name, total_linhas)
 
-    return linhas_total
+    return total_linhas
 
-
-# ==============================
-# RELOAD / LIMPEZA
-# ==============================
 
 def ingest_all() -> int:
     """
-    Reprocessa TODOS os CSVs em DATA_DIR.
-
-    Heurística:
-    - Se nome contém 'SECAO'  -> ingest_votacao_secao
-    - Se nome contém 'MUNZONA' -> ingest_detalhe_munzona
+    Reingere TODOS os CSVs do diretório DATA_DIR.
+    Arquivos com 'SECAO' no nome -> votos_secao
+    Arquivos com 'MUNZONA' no nome -> resumo_munzona
     """
-    init_db()
     total = 0
-
-    for path in DATA_DIR.glob("*.csv"):
-        name_upper = path.name.upper()
+    root = Path(DATA_DIR)
+    for csv_path in root.rglob("*.csv"):
+        name_upper = csv_path.name.upper()
         if "SECAO" in name_upper:
-            total += ingest_votacao_secao(path)
+            total += ingest_votacao_secao(csv_path)
         elif "MUNZONA" in name_upper:
-            total += ingest_detalhe_munzona(path)
+            total += ingest_detalhe_munzona(csv_path)
 
     return total
 
 
 def clear_all_data():
     """
-    Limpa as tabelas de votos, sem dropar estrutura.
-    Útil para /clear-volume.
+    Limpa as tabelas de votos_secao e resumo_munzona.
+    NÃO mexe em candidatos_meta.
     """
-    with engine.begin() as conn:
-        conn.execute(
-            text(f"TRUNCATE TABLE {VotoSecao.__tablename__} RESTART IDENTITY CASCADE")
-        )
-        conn.execute(
-            text(
-                f"TRUNCATE TABLE {ResumoMunZona.__tablename__} RESTART IDENTITY CASCADE"
-            )
-        )
-        conn.execute(
-            text(f"TRUNCATE TABLE {ImportLog.__tablename__} RESTART IDENTITY CASCADE")
-        )
+    with SessionLocal() as session:
+        session.query(VotoSecao).delete()
+        session.query(ResumoMunZona).delete()
+        session.commit()
