@@ -1,76 +1,135 @@
 # models.py
-from datetime import datetime
+from sqlalchemy import Column, Integer, BigInteger, String, Text, DateTime
+from sqlalchemy.sql import func
 
-from sqlalchemy import Column, Integer, String, BigInteger, DateTime
 from database import Base
 
+
+# ============================
+# TABELA DE VOTOS POR SEÇÃO
+# ============================
 
 class VotoSecao(Base):
     __tablename__ = "votos_secao"
 
     id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
 
-    ano = Column(String(4), index=True, nullable=True)
+    ano = Column(String)                     # ANO_ELEICAO
     nr_turno = Column(Integer, nullable=True)
 
-    uf = Column(String(2), index=True, nullable=True)
-    cd_municipio = Column(String(10), index=True, nullable=True)
-    nm_municipio = Column(String(255), nullable=True)
+    uf = Column(String(2))                   # SG_UF
+    cd_municipio = Column(String)
+    nm_municipio = Column(String)
 
-    nr_zona = Column(String(10), index=True, nullable=True)
-    nr_secao = Column(String(10), index=True, nullable=True)
+    nr_zona = Column(String)
+    nr_secao = Column(String)
 
-    nr_local_votacao = Column(String(20), nullable=True)
-    nm_local_votacao = Column(String(255), nullable=True)
-    endereco_local = Column(String(500), nullable=True)
+    nr_local_votacao = Column(String)
+    nm_local_votacao = Column(String)
+    endereco_local = Column(Text)
 
-    cd_cargo = Column(String(10), index=True, nullable=True)
-    ds_cargo = Column(String(100), index=True, nullable=True)
+    cd_cargo = Column(String)
+    ds_cargo = Column(String)
 
-    nr_votavel = Column(String(20), index=True, nullable=True)
-    nm_votavel = Column(String(255), nullable=True)
+    nr_votavel = Column(String)
+    nm_votavel = Column(String)
 
-    nr_partido = Column(String(10), nullable=True)
-    sg_partido = Column(String(20), index=True, nullable=True)
+    nr_partido = Column(String)
+    sg_partido = Column(String)
 
-    qt_votos = Column(BigInteger, nullable=False, default=0)
+    qt_votos = Column(BigInteger)
 
+
+# ============================
+# TABELA DE RESUMO MUNZONA
+# ============================
 
 class ResumoMunZona(Base):
     __tablename__ = "resumo_munzona"
 
     id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
 
-    ano = Column(String(4), index=True, nullable=True)
+    ano = Column(String)
     nr_turno = Column(Integer, nullable=True)
 
-    uf = Column(String(2), index=True, nullable=True)
-    cd_municipio = Column(String(10), index=True, nullable=True)
-    nm_municipio = Column(String(255), nullable=True)
+    uf = Column(String(2))
+    cd_municipio = Column(String)
+    nm_municipio = Column(String)
 
-    nr_zona = Column(String(10), index=True, nullable=True)
+    nr_zona = Column(String)
 
-    cd_cargo = Column(String(10), index=True, nullable=True)
-    ds_cargo = Column(String(100), index=True, nullable=True)
+    cd_cargo = Column(String)
+    ds_cargo = Column(String)
 
-    qt_aptos = Column(BigInteger, nullable=True, default=0)
-    qt_total_secoes = Column(BigInteger, nullable=True, default=0)
-    qt_comparecimento = Column(BigInteger, nullable=True, default=0)
-    qt_abstencoes = Column(BigInteger, nullable=True, default=0)
+    qt_aptos = Column(BigInteger)
+    qt_total_secoes = Column(BigInteger)
+    qt_comparecimento = Column(BigInteger)
+    qt_abstencoes = Column(BigInteger)
 
-    qt_votos = Column(BigInteger, nullable=True, default=0)
-    qt_votos_nominais_validos = Column(BigInteger, nullable=True, default=0)
-    qt_votos_brancos = Column(BigInteger, nullable=True, default=0)
-    qt_total_votos_nulos = Column(BigInteger, nullable=True, default=0)
-    qt_total_votos_leg_validos = Column(BigInteger, nullable=True, default=0)
-    qt_votos_leg_validos = Column(BigInteger, nullable=True, default=0)
+    qt_votos = Column(BigInteger)
+    qt_votos_nominais_validos = Column(BigInteger)
+    qt_votos_brancos = Column(BigInteger)
+    qt_total_votos_nulos = Column(BigInteger)
+    qt_total_votos_leg_validos = Column(BigInteger)
+    qt_votos_leg_validos = Column(BigInteger)
 
+
+# ============================
+# LOG DE IMPORTAÇÃO
+# ============================
 
 class ImportLog(Base):
     __tablename__ = "import_log"
 
     id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
-    tipo_arquivo = Column(String(50), nullable=False)
-    nome_arquivo = Column(String(255), nullable=False)
-    linhas_importadas = Column(BigInteger, nullable=False, default=0)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    tipo_arquivo = Column(String)       # "secao" ou "munzona"
+    nome_arquivo = Column(String)
+    linhas_importadas = Column(BigInteger)
+    criado_em = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================
+# VOTACAO_CANDIDATO_MUNZONA (JÁ NO POSTGRES)
+# ============================================
+
+class VotoCandidatoMunZona(Base):
+    """
+    Mapeia a tabela 'votacao_candidato_munzona' que já está no Postgres.
+
+    Colunas relevantes (em minúsculo, como aparecem no erro do Postgres):
+    - ano
+    - uf
+    - cd_municipio
+    - nm_municipio
+    - cd_cargo
+    - ds_cargo
+    - nr_candidato
+    - nm_candidato
+    - nm_urna_candidato
+    - sg_partido
+    - qt_votos_nominais
+    - qt_votos_nominais_validos
+    - ds_sit_tot_turno
+    """
+
+    __tablename__ = "votacao_candidato_munzona"
+
+    # Definimos uma PK composta lógica (não precisa existir no banco como constraint)
+    ano = Column(String, primary_key=True)          # ano
+    uf = Column(String(2), primary_key=True)        # uf
+    cd_municipio = Column(String, primary_key=True)
+    nm_municipio = Column(String)
+
+    cd_cargo = Column(String, primary_key=True)
+    ds_cargo = Column(String)
+
+    nr_candidato = Column(String, primary_key=True)
+    nm_candidato = Column(String)
+    nm_urna_candidato = Column(String)
+
+    sg_partido = Column(String)
+
+    qt_votos_nominais = Column(BigInteger)
+    qt_votos_nominais_validos = Column(BigInteger)
+
+    ds_sit_tot_turno = Column(String)

@@ -28,7 +28,8 @@ CHUNKSIZE = 100_000
 
 def init_db():
     """
-    Cria as tabelas no banco (se não existirem).
+    Cria as tabelas controladas pelo ORM (se não existirem).
+    NÃO mexe na tabela votacao_candidato_munzona.
     """
     Base.metadata.create_all(bind=engine)
 
@@ -54,8 +55,7 @@ def _detectar_coluna_votos(cols) -> Optional[str]:
 def _int_col(chunk: pd.DataFrame, colname: str) -> pd.Series:
     """
     Converte uma coluna do chunk para int64.
-    Se a coluna não existir, retorna uma série de zeros
-    com o mesmo tamanho do chunk.
+    Se a coluna não existir, retorna zeros.
     """
     if colname in chunk.columns:
         return (
@@ -106,7 +106,7 @@ def ingest_votacao_secao(path: Path) -> int:
         df["nr_local_votacao"] = chunk.get("NR_LOCAL_VOTACAO")
         df["nm_local_votacao"] = chunk.get("NM_LOCAL_VOTACAO")
 
-        # Endereço do local de votação (varia de nome)
+        # Endereço pode ter duas variações de nome
         if "DS_LOCAL_VOTACAO_ENDERECO" in chunk.columns:
             endereco = chunk["DS_LOCAL_VOTACAO_ENDERECO"]
         elif "DS_ENDERECO_LOCAL_VOTACAO" in chunk.columns:
@@ -143,7 +143,7 @@ def ingest_votacao_secao(path: Path) -> int:
 
         linhas_total += len(df)
 
-    # Log de importação
+    # Log
     with SessionLocal() as db:
         log = ImportLog(
             tipo_arquivo="secao",
@@ -243,6 +243,7 @@ def ingest_all() -> int:
     Heurística:
     - Se nome contém 'SECAO'  -> ingest_votacao_secao
     - Se nome contém 'MUNZONA' -> ingest_detalhe_munzona
+    (Não mexe em votacao_candidato_munzona)
     """
     init_db()
     total = 0
@@ -259,8 +260,9 @@ def ingest_all() -> int:
 
 def clear_all_data():
     """
-    Limpa as tabelas de votos, sem dropar estrutura.
-    Útil para /clear-volume.
+    Limpa as tabelas de votos de seção e resumo,
+    além do log de importação.
+    NÃO limpa votacao_candidato_munzona.
     """
     with engine.begin() as conn:
         conn.execute(

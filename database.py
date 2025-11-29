@@ -5,34 +5,27 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 Base = declarative_base()
 
-# ==============================
-# CONFIGURAÇÃO DA DATABASE_URL
-# ==============================
 
-# Fallback para DESENVOLVIMENTO LOCAL
-LOCAL_DEV_DATABASE_URL = (
-    "postgresql+psycopg2://"
-    "postgres:BuRgLylYmpoIqfDgswmNPvKcFymkSffj"
-    "@hopper.proxy.rlwy.net:32045/railway"
-)
+def _build_database_url() -> str:
+    """
+    Usa a URL do Railway (URL_PÚBLICA_DO_BANCO_DE_DADOS) ou DATABASE_URL local.
+    Converte 'postgresql://' em 'postgresql+psycopg2://'.
+    """
+    url = os.getenv("URL_PÚBLICA_DO_BANCO_DE_DADOS") or os.getenv("DATABASE_URL")
 
-# Em produção (Railway) tentamos pegar das variáveis de ambiente
-DATABASE_URL = (
-    os.getenv("DATABASE_URL")
-    or os.getenv("URL_PÚBLICA_DO_BANCO_DE_DADOS")
-    or LOCAL_DEV_DATABASE_URL
-)
+    if not url:
+        raise RuntimeError(
+            "❌ Nenhuma URL de banco encontrada. "
+            "Defina URL_PÚBLICA_DO_BANCO_DE_DADOS (Railway) ou DATABASE_URL (local)."
+        )
 
-if not DATABASE_URL:
-    raise RuntimeError(
-        "❌ Nenhuma DATABASE_URL encontrada. "
-        "Defina DATABASE_URL/URL_PÚBLICA_DO_BANCO_DE_DADOS "
-        "ou ajuste LOCAL_DEV_DATABASE_URL."
-    )
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-# ==============================
-# ENGINE E SESSÃO
-# ==============================
+    return url
+
+
+DATABASE_URL = _build_database_url()
 
 engine = create_engine(
     DATABASE_URL,
@@ -41,11 +34,7 @@ engine = create_engine(
     max_overflow=20,
 )
 
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
-)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def get_db():
