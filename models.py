@@ -98,27 +98,35 @@ class CandidatoMeta(Base):
     Tabela candidatos_meta (já existente no Postgres).
     Usada para Ranking e Pesquisa de candidatos/partidos.
 
-    Aqui usamos os nomes FÍSICOS do banco.
+    Colunas reais, conforme informado:
+    arquivo_origem, ano, uf, cd_cargo, nr_turno,
+    cd_municipio, nm_municipio, nr_candidato, nm_candidato,
+    sg_partido, nm_partido, ds_sit_tot_turno, ds_situacao_candidatura
     """
     __tablename__ = "candidatos_meta"
 
+    # Se essa coluna não existir fisicamente, não tem problema
+    # enquanto a gente não selecionar 'id' nas queries.
     id = Column(BigInteger, primary_key=True, autoincrement=True)
 
+    arquivo_origem = Column(String(255), nullable=True)
     ano = Column(String(4), index=True)
     uf = Column(String(2), index=True)
 
-    cd_municipio = Column(String(10), index=True, nullable=True)
-    nm_municipio = Column(String(150), nullable=True)
+    cd_cargo = Column(String(10), index=True)
+    nr_turno = Column(Integer, index=True)
 
-    # NOME FÍSICO IGUAL AO BANCO
-    cd_cargo = Column(String(10), index=True, nullable=True)
+    cd_municipio = Column(String(10), index=True)
+    nm_municipio = Column(String(150))
 
-    nr_candidato = Column(String(20), index=True, nullable=True)
-    nm_candidato = Column(String(200), nullable=True)
+    nr_candidato = Column(String(20), index=True)
+    nm_candidato = Column(String(200))
 
-    sg_partido = Column(String(20), index=True, nullable=True)
+    sg_partido = Column(String(20), index=True)
+    nm_partido = Column(String(150))
 
-    total_votos = Column(BigInteger, nullable=True)
+    ds_sit_tot_turno = Column(String(100), nullable=True)
+    ds_situacao_candidatura = Column(String(100), nullable=True)
 
 
 class ImportLog(Base):

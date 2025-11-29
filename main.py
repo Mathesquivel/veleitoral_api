@@ -14,8 +14,7 @@ import zipfile
 import shutil
 
 from sqlalchemy.orm import Session
-    # UPLOAD / RELOAD (mesmo esquema)
-from sqlalchemy import func
+from sqlalchemy import func, and_
 
 from database import get_db
 from ingestor import (
@@ -80,7 +79,7 @@ def estatisticas(db: Session = Depends(get_db)):
 
 
 # =============================
-# VOTOS / AGREGAÇÕES (CandidatoMeta + VotoSecao)
+# VOTOS / AGREGAÇÕES
 # =============================
 
 @app.get("/votos/totais", response_model=List[VotoTotalOut])
@@ -96,18 +95,28 @@ def votos_totais(
 ):
     """
     Votos agregados por candidato.
-    >>> Puxa da tabela candidatos_meta <<<
+    VOTOS vêm de votos_secao (qt_votos).
+    META (nome oficial, partido, etc.) vem de candidatos_meta.
     """
     q = db.query(
         CandidatoMeta.ano,
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.cd_cargo.label("ds_cargo"),
+        VotoSecao.ds_cargo.label("ds_cargo"),
         CandidatoMeta.nr_candidato,
         CandidatoMeta.nm_candidato,
         CandidatoMeta.sg_partido,
-        func.sum(CandidatoMeta.total_votos).label("total_votos"),
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    ).join(
+        VotoSecao,
+        and_(
+            VotoSecao.ano == CandidatoMeta.ano,
+            VotoSecao.uf == CandidatoMeta.uf,
+            VotoSecao.cd_municipio == CandidatoMeta.cd_municipio,
+            VotoSecao.cd_cargo == CandidatoMeta.cd_cargo,
+            VotoSecao.nr_votavel == CandidatoMeta.nr_candidato,
+        ),
     )
 
     if ano:
@@ -117,7 +126,8 @@ def votos_totais(
     if cd_municipio:
         q = q.filter(CandidatoMeta.cd_municipio == cd_municipio)
     if ds_cargo:
-        q = q.filter(CandidatoMeta.cd_cargo == ds_cargo)
+        # ds_cargo é texto só em votos_secao
+        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
     if nr_candidato:
         q = q.filter(CandidatoMeta.nr_candidato == nr_candidato)
     if sg_partido:
@@ -128,11 +138,11 @@ def votos_totais(
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.cd_cargo,
+        VotoSecao.ds_cargo,
         CandidatoMeta.nr_candidato,
         CandidatoMeta.nm_candidato,
         CandidatoMeta.sg_partido,
-    ).order_by(func.sum(CandidatoMeta.total_votos).desc()).limit(limit)
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
 
     rows = q.all()
 
@@ -164,7 +174,7 @@ def votos_por_zona(
 ):
     """
     Votos por ZONA, agrupando dados de VotoSecao.
-    >>> Essa continua usando votos_secao (mapa) <<<
+    (Usado pro mapa / zonas).
     """
     q = db.query(
         VotoSecao.ano.label("ano"),
@@ -230,16 +240,25 @@ def votos_por_municipio(
     db: Session = Depends(get_db),
 ):
     """
-    Votos agregados por MUNICÍPIO.
-    >>> Puxa da tabela candidatos_meta <<<
+    Votos agregados por MUNICÍPIO (a partir dos votos de seção).
+    Usa join com candidatos_meta só pra garantir consistência.
     """
     q = db.query(
         CandidatoMeta.ano,
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.cd_cargo.label("ds_cargo"),
-        func.sum(CandidatoMeta.total_votos).label("total_votos"),
+        VotoSecao.ds_cargo.label("ds_cargo"),
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    ).join(
+        VotoSecao,
+        and_(
+            VotoSecao.ano == CandidatoMeta.ano,
+            VotoSecao.uf == CandidatoMeta.uf,
+            VotoSecao.cd_municipio == CandidatoMeta.cd_municipio,
+            VotoSecao.cd_cargo == CandidatoMeta.cd_cargo,
+            VotoSecao.nr_votavel == CandidatoMeta.nr_candidato,
+        ),
     )
 
     if ano:
@@ -247,15 +266,15 @@ def votos_por_municipio(
     if uf:
         q = q.filter(CandidatoMeta.uf == uf)
     if ds_cargo:
-        q = q.filter(CandidatoMeta.cd_cargo == ds_cargo)
+        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
 
     q = q.group_by(
         CandidatoMeta.ano,
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.cd_cargo,
-    ).order_by(func.sum(CandidatoMeta.total_votos).desc()).limit(limit)
+        VotoSecao.ds_cargo,
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
 
     rows = q.all()
 
@@ -279,24 +298,23 @@ def votos_por_cargo(
     db: Session = Depends(get_db),
 ):
     """
-    Votos agregados por CARGO.
-    >>> Puxa da tabela candidatos_meta <<<
+    Votos agregados por CARGO (usando diretamente votos_secao).
     """
     q = db.query(
-        CandidatoMeta.ano,
-        CandidatoMeta.cd_cargo.label("ds_cargo"),
-        func.sum(CandidatoMeta.total_votos).label("total_votos"),
+        VotoSecao.ano,
+        VotoSecao.ds_cargo,
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
     )
 
     if ano:
-        q = q.filter(CandidatoMeta.ano == ano)
+        q = q.filter(VotoSecao.ano == ano)
     if uf:
-        q = q.filter(CandidatoMeta.uf == uf)
+        q = q.filter(VotoSecao.uf == uf)
 
     q = q.group_by(
-        CandidatoMeta.ano,
-        CandidatoMeta.cd_cargo,
-    ).order_by(func.sum(CandidatoMeta.total_votos).desc())
+        VotoSecao.ano,
+        VotoSecao.ds_cargo,
+    ).order_by(func.sum(VotoSecao.qt_votos).desc())
 
     rows = q.all()
 
@@ -311,7 +329,7 @@ def votos_por_cargo(
 
 
 # =============================
-# CANDIDATOS / PARTIDOS (CandidatoMeta)
+# CANDIDATOS / PARTIDOS
 # =============================
 
 @app.get("/candidatos", response_model=List[VotoTotalOut])
@@ -324,18 +342,28 @@ def candidatos(
 ):
     """
     Lista candidatos com total de votos.
-    >>> Puxa da tabela candidatos_meta <<<
+    Votos = soma de votos_secao.
+    Candidatos = meta em candidatos_meta.
     """
     q = db.query(
         CandidatoMeta.ano,
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.cd_cargo.label("ds_cargo"),
+        VotoSecao.ds_cargo.label("ds_cargo"),
         CandidatoMeta.nr_candidato,
         CandidatoMeta.nm_candidato,
         CandidatoMeta.sg_partido,
-        func.sum(CandidatoMeta.total_votos).label("total_votos"),
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    ).join(
+        VotoSecao,
+        and_(
+            VotoSecao.ano == CandidatoMeta.ano,
+            VotoSecao.uf == CandidatoMeta.uf,
+            VotoSecao.cd_municipio == CandidatoMeta.cd_municipio,
+            VotoSecao.cd_cargo == CandidatoMeta.cd_cargo,
+            VotoSecao.nr_votavel == CandidatoMeta.nr_candidato,
+        ),
     )
 
     if ano:
@@ -343,18 +371,18 @@ def candidatos(
     if uf:
         q = q.filter(CandidatoMeta.uf == uf)
     if ds_cargo:
-        q = q.filter(CandidatoMeta.cd_cargo == ds_cargo)
+        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
 
     q = q.group_by(
         CandidatoMeta.ano,
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.cd_cargo,
+        VotoSecao.ds_cargo,
         CandidatoMeta.nr_candidato,
         CandidatoMeta.nm_candidato,
         CandidatoMeta.sg_partido,
-    ).order_by(func.sum(CandidatoMeta.total_votos).desc()).limit(limit)
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
 
     rows = q.all()
 
@@ -381,12 +409,21 @@ def partidos(
 ):
     """
     Total de votos por partido.
-    >>> Puxa da tabela candidatos_meta <<<
+    Usa join para garantir só partidos presentes em candidatos_meta.
     """
     q = db.query(
         CandidatoMeta.sg_partido,
         CandidatoMeta.ano,
-        func.sum(CandidatoMeta.total_votos).label("total_votos"),
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    ).join(
+        VotoSecao,
+        and_(
+            VotoSecao.ano == CandidatoMeta.ano,
+            VotoSecao.uf == CandidatoMeta.uf,
+            VotoSecao.cd_municipio == CandidatoMeta.cd_municipio,
+            VotoSecao.cd_cargo == CandidatoMeta.cd_cargo,
+            VotoSecao.nr_votavel == CandidatoMeta.nr_candidato,
+        ),
     ).filter(CandidatoMeta.sg_partido.isnot(None))
 
     if ano:
@@ -395,7 +432,7 @@ def partidos(
     q = q.group_by(
         CandidatoMeta.sg_partido,
         CandidatoMeta.ano,
-    ).order_by(func.sum(CandidatoMeta.total_votos).desc())
+    ).order_by(func.sum(VotoSecao.qt_votos).desc())
 
     rows = q.all()
 
@@ -417,11 +454,19 @@ def ranking_partidos(
 ):
     """
     Ranking de partidos por votos totais.
-    >>> Puxa da tabela candidatos_meta <<<
     """
     q = db.query(
         CandidatoMeta.sg_partido,
-        func.sum(CandidatoMeta.total_votos).label("total_votos"),
+        func.sum(VotoSecao.qt_votos).label("total_votos"),
+    ).join(
+        VotoSecao,
+        and_(
+            VotoSecao.ano == CandidatoMeta.ano,
+            VotoSecao.uf == CandidatoMeta.uf,
+            VotoSecao.cd_municipio == CandidatoMeta.cd_municipio,
+            VotoSecao.cd_cargo == CandidatoMeta.cd_cargo,
+            VotoSecao.nr_votavel == CandidatoMeta.nr_candidato,
+        ),
     ).filter(CandidatoMeta.sg_partido.isnot(None))
 
     if ano:
@@ -429,7 +474,7 @@ def ranking_partidos(
 
     q = q.group_by(
         CandidatoMeta.sg_partido,
-    ).order_by(func.sum(CandidatoMeta.total_votos).desc()).limit(limit)
+    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
 
     rows = q.all()
 
