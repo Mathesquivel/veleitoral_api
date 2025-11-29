@@ -25,7 +25,11 @@ from ingestor import (
     DATA_DIR,
     init_db,
 )
-from models import VotoSecao, ResumoMunZona
+from models import (
+    VotoSecao,
+    ResumoMunZona,
+    VotoCandidatoMunZona,
+)
 from schemas import (
     VotoTotalOut,
     VotoZonaOut,
@@ -54,11 +58,14 @@ def on_startup():
 
 
 # =============================
-# ESTATÍSTICAS
+# ESTATÍSTICAS GERAIS
 # =============================
 
 @app.get("/estatisticas", response_model=EstatisticasOut)
 def estatisticas(db: Session = Depends(get_db)):
+    """
+    Estatísticas gerais de linhas de votos de seção e resumo munzona.
+    """
     total_secao = db.query(func.count(VotoSecao.id)).scalar() or 0
     total_mz = db.query(func.count(ResumoMunZona.id)).scalar() or 0
 
@@ -75,36 +82,34 @@ def estatisticas(db: Session = Depends(get_db)):
 
 
 # =============================
-# VOTOS / AGREGAÇÕES
+# MAPA / LOCAIS (USA SOMENTE VOTACAO_SECAO)
 # =============================
 
-@app.get("/votos/totais", response_model=List[VotoTotalOut])
-def votos_totais(
+@app.get("/mapa/locais", response_model=List[LocalMapaOut])
+def mapa_locais(
     ano: Optional[str] = Query(None),
     uf: Optional[str] = Query(None),
     cd_municipio: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(
-        None,
-        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
-    ),
+    cd_cargo: Optional[str] = Query(None),
     ds_cargo: Optional[str] = Query(None),
-    nr_candidato: Optional[str] = Query(None, description="Número do votável"),
-    sg_partido: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(1000, ge=1, le=10000),
     db: Session = Depends(get_db),
 ):
     """
-    Votos agregados por candidato (a partir de VotoSecao).
+    Locais de votação para o mapa:
+    agrega votos por local/zona/seção a partir de VotoSecao.
     """
     q = db.query(
         VotoSecao.ano.label("ano"),
         VotoSecao.uf.label("uf"),
         VotoSecao.cd_municipio,
         VotoSecao.nm_municipio,
+        VotoSecao.nr_zona,
+        VotoSecao.nr_secao,
+        VotoSecao.nr_local_votacao,
+        VotoSecao.nm_local_votacao,
+        VotoSecao.endereco_local,
         VotoSecao.ds_cargo,
-        VotoSecao.nr_votavel.label("nr_candidato"),
-        VotoSecao.nm_votavel.label("nm_candidato"),
-        VotoSecao.sg_partido,
         func.sum(VotoSecao.qt_votos).label("total_votos"),
     )
 
@@ -118,39 +123,43 @@ def votos_totais(
         q = q.filter(VotoSecao.cd_cargo == cd_cargo)
     if ds_cargo:
         q = q.filter(VotoSecao.ds_cargo == ds_cargo)
-    if nr_candidato:
-        q = q.filter(VotoSecao.nr_votavel == nr_candidato)
-    if sg_partido:
-        q = q.filter(VotoSecao.sg_partido == sg_partido)
 
     q = q.group_by(
         VotoSecao.ano,
         VotoSecao.uf,
         VotoSecao.cd_municipio,
         VotoSecao.nm_municipio,
+        VotoSecao.nr_zona,
+        VotoSecao.nr_secao,
+        VotoSecao.nr_local_votacao,
+        VotoSecao.nm_local_votacao,
+        VotoSecao.endereco_local,
         VotoSecao.ds_cargo,
-        VotoSecao.nr_votavel,
-        VotoSecao.nm_votavel,
-        VotoSecao.sg_partido,
     ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
 
     rows = q.all()
 
     return [
-        VotoTotalOut(
+        LocalMapaOut(
             ano=r.ano,
             uf=r.uf,
             cd_municipio=r.cd_municipio,
             nm_municipio=r.nm_municipio,
+            nr_zona=r.nr_zona,
+            nr_secao=r.nr_secao,
+            nr_local_votacao=r.nr_local_votacao,
+            nm_local_votacao=r.nm_local_votacao,
+            endereco_local=r.endereco_local,
             ds_cargo=r.ds_cargo,
-            nr_candidato=r.nr_candidato,
-            nm_candidato=r.nm_candidato,
-            sg_partido=r.sg_partido,
             total_votos=r.total_votos,
         )
         for r in rows
     ]
 
+
+# =============================
+# AGREGAÇÕES POR SEÇÃO (VotoSecao)
+# =============================
 
 @app.get("/votos/zona", response_model=List[VotoZonaOut])
 def votos_por_zona(
@@ -158,16 +167,13 @@ def votos_por_zona(
     uf: Optional[str] = Query(None),
     cd_municipio: Optional[str] = Query(None),
     nr_zona: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(
-        None,
-        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
-    ),
+    cd_cargo: Optional[str] = Query(None),
     ds_cargo: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
     """
-    Votos por ZONA, agrupando dados de VotoSecao.
+    Votos por ZONA, a partir de VotoSecao.
     """
     q = db.query(
         VotoSecao.ano.label("ano"),
@@ -176,9 +182,6 @@ def votos_por_zona(
         VotoSecao.nm_municipio,
         VotoSecao.nr_zona,
         VotoSecao.ds_cargo,
-        VotoSecao.nr_votavel.label("nr_candidato"),
-        VotoSecao.nm_votavel.label("nm_candidato"),
-        VotoSecao.sg_partido,
         func.sum(VotoSecao.qt_votos).label("total_votos"),
     )
 
@@ -202,9 +205,6 @@ def votos_por_zona(
         VotoSecao.nm_municipio,
         VotoSecao.nr_zona,
         VotoSecao.ds_cargo,
-        VotoSecao.nr_votavel,
-        VotoSecao.nm_votavel,
-        VotoSecao.sg_partido,
     ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
 
     rows = q.all()
@@ -217,9 +217,6 @@ def votos_por_zona(
             nm_municipio=r.nm_municipio,
             nr_zona=r.nr_zona,
             ds_cargo=r.ds_cargo,
-            nr_candidato=r.nr_candidato,
-            nm_candidato=r.nm_candidato,
-            sg_partido=r.sg_partido,
             total_votos=r.total_votos,
         )
         for r in rows
@@ -230,16 +227,13 @@ def votos_por_zona(
 def votos_por_municipio(
     ano: Optional[str] = Query(None),
     uf: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(
-        None,
-        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
-    ),
+    cd_cargo: Optional[str] = Query(None),
     ds_cargo: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
     """
-    Votos agregados por MUNICÍPIO (a partir de VotoSecao).
+    Votos agregados por MUNICÍPIO, a partir de VotoSecao.
     """
     q = db.query(
         VotoSecao.ano,
@@ -289,7 +283,7 @@ def votos_por_cargo(
     db: Session = Depends(get_db),
 ):
     """
-    Votos agregados por CARGO (VotoSecao).
+    Votos agregados por CARGO (a partir de VotoSecao).
     """
     q = db.query(
         VotoSecao.ano,
@@ -320,104 +314,211 @@ def votos_por_cargo(
 
 
 # =============================
-# CANDIDATOS / PARTIDOS
+# AGREGAÇÕES USANDO VOTACAO_CANDIDATO_MUNZONA
+# (PESQUISA / RANKING / PARTIDOS / CANDIDATOS)
 # =============================
 
-@app.get("/candidatos", response_model=List[VotoTotalOut])
-def candidatos(
+@app.get("/votos/totais", response_model=List[VotoTotalOut])
+def votos_totais(
     ano: Optional[str] = Query(None),
     uf: Optional[str] = Query(None),
     cd_municipio: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(
-        None,
-        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
-    ),
+    cd_cargo: Optional[str] = Query(None),
     ds_cargo: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=1000),
+    nr_candidato: Optional[str] = Query(None),
+    sg_partido: Optional[str] = Query(None),
+    ds_sit_tot_turno: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
     """
-    Lista candidatos (NR_VOTAVEL) com total de votos.
+    Votos agregados por candidato, usando Votacao_Candidato_Munzona.
+    Usa QT_VOTOS_NOMINAIS_VALIDOS como total de votos.
     """
     q = db.query(
-        VotoSecao.ano.label("ano"),
-        VotoSecao.uf.label("uf"),
-        VotoSecao.cd_municipio,
-        VotoSecao.nm_municipio,
-        VotoSecao.ds_cargo,
-        VotoSecao.nr_votavel.label("nr_candidato"),
-        VotoSecao.nm_votavel.label("nm_candidato"),
-        VotoSecao.sg_partido,
-        func.sum(VotoSecao.qt_votos).label("total_votos"),
+        VotoCandidatoMunZona.ano.label("ano"),
+        VotoCandidatoMunZona.uf.label("uf"),
+        VotoCandidatoMunZona.cd_municipio,
+        VotoCandidatoMunZona.nm_municipio,
+        VotoCandidatoMunZona.cd_cargo,
+        VotoCandidatoMunZona.ds_cargo,
+        VotoCandidatoMunZona.nr_candidato,
+        VotoCandidatoMunZona.nm_candidato,
+        VotoCandidatoMunZona.nm_urna_candidato,
+        VotoCandidatoMunZona.sg_partido,
+        VotoCandidatoMunZona.ds_sit_tot_turno,
+        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
     )
 
     if ano:
-        q = q.filter(VotoSecao.ano == ano)
+        q = q.filter(VotoCandidatoMunZona.ano == ano)
     if uf:
-        q = q.filter(VotoSecao.uf == uf)
+        q = q.filter(VotoCandidatoMunZona.uf == uf)
     if cd_municipio:
-        q = q.filter(VotoSecao.cd_municipio == cd_municipio)
+        q = q.filter(VotoCandidatoMunZona.cd_municipio == cd_municipio)
     if cd_cargo:
-        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
+        q = q.filter(VotoCandidatoMunZona.cd_cargo == cd_cargo)
     if ds_cargo:
-        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
+        q = q.filter(VotoCandidatoMunZona.ds_cargo == ds_cargo)
+    if nr_candidato:
+        q = q.filter(VotoCandidatoMunZona.nr_candidato == nr_candidato)
+    if sg_partido:
+        q = q.filter(VotoCandidatoMunZona.sg_partido == sg_partido)
+    if ds_sit_tot_turno:
+        q = q.filter(VotoCandidatoMunZona.ds_sit_tot_turno == ds_sit_tot_turno)
 
     q = q.group_by(
-        VotoSecao.ano,
-        VotoSecao.uf,
-        VotoSecao.cd_municipio,
-        VotoSecao.nm_municipio,
-        VotoSecao.ds_cargo,
-        VotoSecao.nr_votavel,
-        VotoSecao.nm_votavel,
-        VotoSecao.sg_partido,
-    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
+        VotoCandidatoMunZona.ano,
+        VotoCandidatoMunZona.uf,
+        VotoCandidatoMunZona.cd_municipio,
+        VotoCandidatoMunZona.nm_municipio,
+        VotoCandidatoMunZona.cd_cargo,
+        VotoCandidatoMunZona.ds_cargo,
+        VotoCandidatoMunZona.nr_candidato,
+        VotoCandidatoMunZona.nm_candidato,
+        VotoCandidatoMunZona.nm_urna_candidato,
+        VotoCandidatoMunZona.sg_partido,
+        VotoCandidatoMunZona.ds_sit_tot_turno,
+    ).order_by(
+        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).desc()
+    ).limit(limit)
 
     rows = q.all()
 
     return [
         VotoTotalOut(
             ano=r.ano,
+            nr_turno=None,  # coluna não existe na tabela atual
             uf=r.uf,
             cd_municipio=r.cd_municipio,
             nm_municipio=r.nm_municipio,
+            cd_cargo=r.cd_cargo,
             ds_cargo=r.ds_cargo,
             nr_candidato=r.nr_candidato,
             nm_candidato=r.nm_candidato,
+            nm_urna_candidato=r.nm_urna_candidato,
             sg_partido=r.sg_partido,
             total_votos=r.total_votos,
+            ds_sit_tot_turno=r.ds_sit_tot_turno,
         )
         for r in rows
     ]
 
 
-@app.get("/partidos", response_model=List[PartidoOut])
-def partidos(
+# <<< BLOCO TEMPORÁRIO COM TRY/EXCEPT EM /candidatos >>>
+
+@app.get("/candidatos", response_model=List[VotoTotalOut])
+def candidatos(
     ano: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(
-        None,
-        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
-    ),
+    uf: Optional[str] = Query(None),
+    cd_municipio: Optional[str] = Query(None),
+    cd_cargo: Optional[str] = Query(None),
+    ds_cargo: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=2000),
     db: Session = Depends(get_db),
 ):
     """
-    Total de votos por partido (a partir de VotoSecao).
+    Lista candidatos com seus totais (usa a base de Votacao_Candidato_Munzona).
+    MESMO CÓDIGO DE /votos/totais, mas com try/except para debug.
+    """
+    try:
+        q = db.query(
+            VotoCandidatoMunZona.ano.label("ano"),
+            VotoCandidatoMunZona.uf.label("uf"),
+            VotoCandidatoMunZona.cd_municipio,
+            VotoCandidatoMunZona.nm_municipio,
+            VotoCandidatoMunZona.cd_cargo,
+            VotoCandidatoMunZona.ds_cargo,
+            VotoCandidatoMunZona.nr_candidato,
+            VotoCandidatoMunZona.nm_candidato,
+            VotoCandidatoMunZona.nm_urna_candidato,
+            VotoCandidatoMunZona.sg_partido,
+            VotoCandidatoMunZona.ds_sit_tot_turno,
+            func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
+        )
+
+        if ano:
+            q = q.filter(VotoCandidatoMunZona.ano == ano)
+        if uf:
+            q = q.filter(VotoCandidatoMunZona.uf == uf)
+        if cd_municipio:
+            q = q.filter(VotoCandidatoMunZona.cd_municipio == cd_municipio)
+        if cd_cargo:
+            q = q.filter(VotoCandidatoMunZona.cd_cargo == cd_cargo)
+        if ds_cargo:
+            q = q.filter(VotoCandidatoMunZona.ds_cargo == ds_cargo)
+
+        q = q.group_by(
+            VotoCandidatoMunZona.ano,
+            VotoCandidatoMunZona.uf,
+            VotoCandidatoMunZona.cd_municipio,
+            VotoCandidatoMunZona.nm_municipio,
+            VotoCandidatoMunZona.cd_cargo,
+            VotoCandidatoMunZona.ds_cargo,
+            VotoCandidatoMunZona.nr_candidato,
+            VotoCandidatoMunZona.nm_candidato,
+            VotoCandidatoMunZona.nm_urna_candidato,
+            VotoCandidatoMunZona.sg_partido,
+            VotoCandidatoMunZona.ds_sit_tot_turno,
+        ).order_by(
+            func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).desc()
+        ).limit(limit)
+
+        rows = q.all()
+
+        return [
+            VotoTotalOut(
+                ano=r.ano,
+                nr_turno=None,  # coluna não existe na tabela
+                uf=r.uf,
+                cd_municipio=r.cd_municipio,
+                nm_municipio=r.nm_municipio,
+                cd_cargo=r.cd_cargo,
+                ds_cargo=r.ds_cargo,
+                nr_candidato=r.nr_candidato,
+                nm_candidato=r.nm_candidato,
+                nm_urna_candidato=r.nm_urna_candidato,
+                sg_partido=r.sg_partido,
+                total_votos=r.total_votos,
+                ds_sit_tot_turno=r.ds_sit_tot_turno,
+            )
+            for r in rows
+        ]
+    except Exception as e:
+        # aqui a gente vê o erro REAL no Swagger
+        raise HTTPException(status_code=500, detail=f"Erro na query candidatos: {e}")
+
+
+@app.get("/partidos", response_model=List[PartidoOut])
+def partidos(
+    ano: Optional[str] = Query(None),
+    uf: Optional[str] = Query(None),
+    cd_cargo: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=2000),
+    db: Session = Depends(get_db),
+):
+    """
+    Total de votos por partido (Votacao_Candidato_Munzona).
     """
     q = db.query(
-        VotoSecao.sg_partido,
-        VotoSecao.ano,
-        func.sum(VotoSecao.qt_votos).label("total_votos"),
-    ).filter(VotoSecao.sg_partido.isnot(None))
+        VotoCandidatoMunZona.sg_partido,
+        VotoCandidatoMunZona.ano,
+        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
+    ).filter(VotoCandidatoMunZona.sg_partido.isnot(None))
 
     if ano:
-        q = q.filter(VotoSecao.ano == ano)
+        q = q.filter(VotoCandidatoMunZona.ano == ano)
+    if uf:
+        q = q.filter(VotoCandidatoMunZona.uf == uf)
     if cd_cargo:
-        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
+        q = q.filter(VotoCandidatoMunZona.cd_cargo == cd_cargo)
 
     q = q.group_by(
-        VotoSecao.sg_partido,
-        VotoSecao.ano,
-    ).order_by(func.sum(VotoSecao.qt_votos).desc())
+        VotoCandidatoMunZona.sg_partido,
+        VotoCandidatoMunZona.ano,
+    ).order_by(
+        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).desc()
+    ).limit(limit)
 
     rows = q.all()
 
@@ -434,29 +535,31 @@ def partidos(
 @app.get("/ranking/partidos", response_model=List[RankingPartidosOut])
 def ranking_partidos(
     ano: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(
-        None,
-        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
-    ),
-    limit: int = Query(30, ge=1, le=100),
+    uf: Optional[str] = Query(None),
+    cd_cargo: Optional[str] = Query(None),
+    limit: int = Query(30, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
     """
-    Ranking de partidos por votos totais (VotoSecao).
+    Ranking de partidos por votos totais (Votacao_Candidato_Munzona).
     """
     q = db.query(
-        VotoSecao.sg_partido,
-        func.sum(VotoSecao.qt_votos).label("total_votos"),
-    ).filter(VotoSecao.sg_partido.isnot(None))
+        VotoCandidatoMunZona.sg_partido,
+        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).label("total_votos"),
+    ).filter(VotoCandidatoMunZona.sg_partido.isnot(None))
 
     if ano:
-        q = q.filter(VotoSecao.ano == ano)
+        q = q.filter(VotoCandidatoMunZona.ano == ano)
+    if uf:
+        q = q.filter(VotoCandidatoMunZona.uf == uf)
     if cd_cargo:
-        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
+        q = q.filter(VotoCandidatoMunZona.cd_cargo == cd_cargo)
 
     q = q.group_by(
-        VotoSecao.sg_partido,
-    ).order_by(func.sum(VotoSecao.qt_votos).desc()).limit(limit)
+        VotoCandidatoMunZona.sg_partido,
+    ).order_by(
+        func.sum(VotoCandidatoMunZona.qt_votos_nominais_validos).desc()
+    ).limit(limit)
 
     rows = q.all()
 
@@ -470,103 +573,23 @@ def ranking_partidos(
 
 
 # =============================
-# MAPA ELEITORAL (SEÇÃO)
-# =============================
-
-@app.get("/mapa/locais", response_model=List[LocalMapaOut])
-def mapa_locais(
-    ano: Optional[str] = Query(None),
-    uf: Optional[str] = Query(None),
-    cd_municipio: Optional[str] = Query(None),
-    cd_cargo: Optional[str] = Query(
-        None,
-        description="Código do cargo TSE (ex: 11=Prefeito, 13=Vereador)"
-    ),
-    ds_cargo: Optional[str] = Query(None),
-    limit: int = Query(1000, ge=1, le=10000),
-    db: Session = Depends(get_db),
-):
-    """
-    Locais de votação para o mapa:
-    agrega votos por local/zona/seção (a partir de VotoSecao).
-    """
-    q = db.query(
-        VotoSecao.ano.label("ano"),
-        VotoSecao.uf.label("uf"),
-        VotoSecao.cd_municipio,
-        VotoSecao.nm_municipio,
-        VotoSecao.nr_zona,
-        VotoSecao.nr_secao,
-        VotoSecao.nr_local_votacao,
-        VotoSecao.nm_local_votacao,
-        VotoSecao.endereco_local,
-        VotoSecao.ds_cargo,
-        func.sum(VotoSecao.qt_votos).label("total_votos"),
-    )
-
-    if ano:
-        q = q.filter(VotoSecao.ano == ano)
-    if uf:
-        q = q.filter(VotoSecao.uf == uf)
-    if cd_municipio:
-        q = q.filter(VotoSecao.cd_municipio == cd_municipio)
-    if cd_cargo:
-        q = q.filter(VotoSecao.cd_cargo == cd_cargo)
-    if ds_cargo:
-        q = q.filter(VotoSecao.ds_cargo == ds_cargo)
-
-    q = q.group_by(
-        VotoSecao.ano,
-        VotoSecao.uf,
-        VotoSecao.cd_municipio,
-        VotoSecao.nm_municipio,
-        VotoSecao.nr_zona,
-        VotoSecao.nr_secao,
-        VotoSecao.nr_local_votacao,
-        VotoSecao.nm_local_votacao,
-        VotoSecao.endereco_local,
-        VotoSecao.ds_cargo,
-    ).order_by(
-        func.sum(VotoSecao.qt_votos).desc()
-    ).limit(limit)
-
-    rows = q.all()
-
-    return [
-        LocalMapaOut(
-            ano=r.ano,
-            uf=r.uf,
-            cd_municipio=r.cd_municipio,
-            nm_municipio=r.nm_municipio,
-            nr_zona=r.nr_zona,
-            nr_secao=r.nr_secao,
-            nr_local_votacao=r.nr_local_votacao,
-            nm_local_votacao=r.nm_local_votacao,
-            endereco_local=r.endereco_local,
-            ds_cargo=r.ds_cargo,
-            total_votos=r.total_votos,
-        )
-        for r in rows
-    ]
-
-
-# =============================
-# UPLOAD / RELOAD
+# UPLOAD / RELOAD / CLEAR
 # =============================
 
 @app.post("/upload", response_model=UploadResponse)
 async def upload_csv(
     tipo: str = Query(
         ...,
-        pattern="^(secao|munzona|generico|resumo)$",
-        description="Tipo de arquivo: secao ou munzona (generico/resumo tratam como munzona)",
+        pattern="^(secao|munzona)$",
+        description="secao -> VOTACAO_SECAO, munzona -> DETALHE_VOTACAO_MUNZONA",
     ),
     file: UploadFile = File(...),
 ):
     """
-    Faz upload de UM CSV e ingere:
+    Upload de UM CSV:
       - tipo=secao  -> VOTACAO_SECAO -> tabela votos_secao
-      - tipo=munzona/generico/resumo -> DETALHE_VOTACAO_MUNZONA -> tabela resumo_munzona
+      - tipo=munzona -> DETALHE_VOTACAO_MUNZONA -> tabela resumo_munzona
+    (Os arquivos de votacao_candidato_munzona você já carregou direto no Postgres)
     """
     filename = file.filename
 
@@ -596,9 +619,9 @@ async def upload_csv(
 @app.post("/upload-zip", response_model=UploadResponse)
 async def upload_zip(file: UploadFile = File(...)):
     """
-    Upload de um ZIP com vários CSVs.
-    - Arquivos com 'SECAO' no nome -> VOTACAO_SECAO
-    - Arquivos com 'MUNZONA' no nome -> DETALHE_VOTACAO_MUNZONA
+    Upload de um ZIP com vários CSVs:
+    - 'SECAO'  -> VOTACAO_SECAO
+    - 'MUNZONA' -> DETALHE_VOTACAO_MUNZONA
     """
     filename = file.filename
 
@@ -643,11 +666,12 @@ async def upload_zip(file: UploadFile = File(...)):
 def reload_arquivos_existentes():
     """
     Reingere TODOS os CSVs que já estão em /app/dados_tse_volume (ou ./dados_tse em dev).
+    (Somente SECAO e DETALHE_VOTACAO_MUNZONA; votacao_candidato_munzona já está no banco)
     """
     try:
         total = ingest_all()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro no reload: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro no reload: {e}")
 
     return UploadResponse(
         mensagem="Reload concluído com sucesso",
@@ -659,16 +683,16 @@ def reload_arquivos_existentes():
 def clear_volume():
     """
     Apaga todos os arquivos do volume e limpa as tabelas de votos.
-    CUIDADO: isso zera os dados.
+    CUIDADO: isso zera os dados de SECAO/MUNZONA (não mexe na tabela
+    de votacao_candidato_munzona que você já carregou manualmente, a
+    não ser que clear_all_data faça isso também).
     """
-    # Apaga arquivos do volume
     for path in Path(UPLOAD_DIR).glob("*"):
         if path.is_file():
             path.unlink()
         else:
             shutil.rmtree(path, ignore_errors=True)
 
-    # Limpa dados no banco
     clear_all_data()
 
     return {"mensagem": "Volume e dados de votos apagados com sucesso"}
