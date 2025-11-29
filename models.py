@@ -95,8 +95,12 @@ class ImportLog(Base):
 class VotoCandidatoMunZona(Base):
     """
     Mapeia a tabela 'votacao_candidato_munzona' que já está no Postgres.
-    Não mapeamos a coluna de votos aqui, pois a API descobre
-    dinamicamente qual é (qt_votos, qt_votos_nominais etc.).
+
+    Importante:
+    - As colunas de votos abaixo são TODAS opcionais.
+    - A função _get_voto_col (em main.py) descobre qual delas existe
+      de verdade no banco (qt_votos, qt_votos_nominais_validos etc.).
+    - Só a coluna que realmente existe será usada nas queries.
     """
 
     __tablename__ = "votacao_candidato_munzona"
@@ -115,3 +119,9 @@ class VotoCandidatoMunZona(Base):
     sg_partido = Column(String)
 
     ds_sit_tot_turno = Column(String)
+
+    # Possíveis colunas de votos (uma ou algumas podem existir no banco)
+    qt_votos_nominais_validos = Column(BigInteger, nullable=True)
+    qt_votos_nominais = Column(BigInteger, nullable=True)
+    qt_votos_validos = Column(BigInteger, nullable=True)
+    qt_votos = Column(BigInteger, nullable=True)
