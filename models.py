@@ -98,8 +98,7 @@ class CandidatoMeta(Base):
     Tabela candidatos_meta (já existente no Postgres).
     Usada para Ranking e Pesquisa de candidatos/partidos.
 
-    No banco, a coluna é CD_CARGO.
-    Aqui mapeamos como 'ds_cargo' para reaproveitar os schemas.
+    Aqui usamos os nomes FÍSICOS do banco.
     """
     __tablename__ = "candidatos_meta"
 
@@ -111,8 +110,8 @@ class CandidatoMeta(Base):
     cd_municipio = Column(String(10), index=True, nullable=True)
     nm_municipio = Column(String(150), nullable=True)
 
-    # Coluna física 'cd_cargo', atributo Python 'ds_cargo'
-    ds_cargo = Column("cd_cargo", String(100), index=True, nullable=True)
+    # NOME FÍSICO IGUAL AO BANCO
+    cd_cargo = Column(String(10), index=True, nullable=True)
 
     nr_candidato = Column(String(20), index=True, nullable=True)
     nm_candidato = Column(String(200), nullable=True)
@@ -120,12 +119,6 @@ class CandidatoMeta(Base):
     sg_partido = Column(String(20), index=True, nullable=True)
 
     total_votos = Column(BigInteger, nullable=True)
-
-    __table_args__ = (
-        Index("ix_cmeta_ano_uf_cargo", "ano", "uf", "ds_cargo"),
-        Index("ix_cmeta_candidato", "ano", "nr_candidato"),
-        Index("ix_cmeta_partido", "ano", "sg_partido"),
-    )
 
 
 class ImportLog(Base):

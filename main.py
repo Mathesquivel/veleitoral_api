@@ -14,6 +14,7 @@ import zipfile
 import shutil
 
 from sqlalchemy.orm import Session
+    # UPLOAD / RELOAD (mesmo esquema)
 from sqlalchemy import func
 
 from database import get_db
@@ -102,7 +103,7 @@ def votos_totais(
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.ds_cargo,
+        CandidatoMeta.cd_cargo.label("ds_cargo"),
         CandidatoMeta.nr_candidato,
         CandidatoMeta.nm_candidato,
         CandidatoMeta.sg_partido,
@@ -116,7 +117,7 @@ def votos_totais(
     if cd_municipio:
         q = q.filter(CandidatoMeta.cd_municipio == cd_municipio)
     if ds_cargo:
-        q = q.filter(CandidatoMeta.ds_cargo == ds_cargo)
+        q = q.filter(CandidatoMeta.cd_cargo == ds_cargo)
     if nr_candidato:
         q = q.filter(CandidatoMeta.nr_candidato == nr_candidato)
     if sg_partido:
@@ -127,7 +128,7 @@ def votos_totais(
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.ds_cargo,
+        CandidatoMeta.cd_cargo,
         CandidatoMeta.nr_candidato,
         CandidatoMeta.nm_candidato,
         CandidatoMeta.sg_partido,
@@ -237,7 +238,7 @@ def votos_por_municipio(
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.ds_cargo,
+        CandidatoMeta.cd_cargo.label("ds_cargo"),
         func.sum(CandidatoMeta.total_votos).label("total_votos"),
     )
 
@@ -246,14 +247,14 @@ def votos_por_municipio(
     if uf:
         q = q.filter(CandidatoMeta.uf == uf)
     if ds_cargo:
-        q = q.filter(CandidatoMeta.ds_cargo == ds_cargo)
+        q = q.filter(CandidatoMeta.cd_cargo == ds_cargo)
 
     q = q.group_by(
         CandidatoMeta.ano,
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.ds_cargo,
+        CandidatoMeta.cd_cargo,
     ).order_by(func.sum(CandidatoMeta.total_votos).desc()).limit(limit)
 
     rows = q.all()
@@ -283,7 +284,7 @@ def votos_por_cargo(
     """
     q = db.query(
         CandidatoMeta.ano,
-        CandidatoMeta.ds_cargo,
+        CandidatoMeta.cd_cargo.label("ds_cargo"),
         func.sum(CandidatoMeta.total_votos).label("total_votos"),
     )
 
@@ -294,7 +295,7 @@ def votos_por_cargo(
 
     q = q.group_by(
         CandidatoMeta.ano,
-        CandidatoMeta.ds_cargo,
+        CandidatoMeta.cd_cargo,
     ).order_by(func.sum(CandidatoMeta.total_votos).desc())
 
     rows = q.all()
@@ -330,7 +331,7 @@ def candidatos(
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.ds_cargo,
+        CandidatoMeta.cd_cargo.label("ds_cargo"),
         CandidatoMeta.nr_candidato,
         CandidatoMeta.nm_candidato,
         CandidatoMeta.sg_partido,
@@ -342,14 +343,14 @@ def candidatos(
     if uf:
         q = q.filter(CandidatoMeta.uf == uf)
     if ds_cargo:
-        q = q.filter(CandidatoMeta.ds_cargo == ds_cargo)
+        q = q.filter(CandidatoMeta.cd_cargo == ds_cargo)
 
     q = q.group_by(
         CandidatoMeta.ano,
         CandidatoMeta.uf,
         CandidatoMeta.cd_municipio,
         CandidatoMeta.nm_municipio,
-        CandidatoMeta.ds_cargo,
+        CandidatoMeta.cd_cargo,
         CandidatoMeta.nr_candidato,
         CandidatoMeta.nm_candidato,
         CandidatoMeta.sg_partido,
@@ -442,7 +443,7 @@ def ranking_partidos(
 
 
 # =============================
-# UPLOAD / RELOAD (mesmo esquema)
+# UPLOAD / RELOAD
 # =============================
 
 @app.post("/upload", response_model=UploadResponse)
@@ -549,9 +550,8 @@ def reload_arquivos_existentes():
 @app.post("/clear-volume")
 def clear_volume():
     """
-    Apaga todos os arquivos do volume e limpa as tabelas de votos.
-    CUIDADO: isso zera os dados de votos_secao e resumo_munzona,
-    mas NÃO mexe em candidatos_meta.
+    Apaga todos os arquivos do volume e limpa as tabelas de votos_secao e resumo_munzona.
+    NÃO mexe em candidatos_meta.
     """
     # Apaga arquivos
     for path in Path(UPLOAD_DIR).glob("*"):
